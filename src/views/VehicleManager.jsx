@@ -1,10 +1,20 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import GlassCard from '../components/common/GlassCard';
 import { Car, Trash2, Bike, ShieldCheck, Plus, Pencil, Wrench, AlertTriangle, CheckCircle, IndianRupee, ChevronDown, Fuel } from 'lucide-react';
 
 const VehicleManager = ({ vehicles, entries, services, onDeleteVehicle, onAddClick, onEdit, onMarkServiced }) => {
   const [activeTab, setActiveTab] = useState('fleet');
   const [expandedVehicle, setExpandedVehicle] = useState(null);
+  const [scrolled, setScrolled] = useState(false);
+  const contentRef = useRef(null);
+
+  useEffect(() => {
+    const el = contentRef.current;
+    if (!el) return;
+    const handler = () => setScrolled(el.scrollTop > 8);
+    el.addEventListener('scroll', handler, { passive: true });
+    return () => el.removeEventListener('scroll', handler);
+  }, []);
   const getServiceStatus = (vehicle) => {
     if (!vehicle.serviceInterval) return null;
     const ve = entries
@@ -45,17 +55,22 @@ const VehicleManager = ({ vehicles, entries, services, onDeleteVehicle, onAddCli
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '32px' }}>
-      <header style={{ position: 'relative', width: '100%' }}>
-        <div style={{ display: 'flex', flexDirection: 'column' }}>
-          <h1 className="title-large text-primary">Garage</h1>
-          <span className="label-small text-secondary">Secure Unit Storage</span>
+    <div className="view-container">
+      {/* FIXED HEADER */}
+      <div className={`view-header ${scrolled ? 'scrolled' : ''}`}>
+        <div>
+          <h1 className="view-title">Garage</h1>
+          <span className="view-subtitle">Secure Unit Storage</span>
         </div>
-        <button className="header-btn" onClick={onAddClick} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <Plus size={24} strokeWidth={3} />
-        </button>
-      </header>
+        <div className="header-actions">
+          <button className="header-icon-btn primary" onClick={onAddClick}>
+            <Plus size={22} />
+          </button>
+        </div>
+      </div>
 
+      {/* SCROLLABLE CONTENT */}
+      <div className="view-content" ref={contentRef}>
       <div className="segmented-control mt-2 mb-2">
         <div onClick={() => setActiveTab('fleet')} className={`segmented-item ${activeTab === 'fleet' ? 'active' : ''}`}>Current Garage</div>
         <div onClick={() => setActiveTab('ownership')} className={`segmented-item ${activeTab === 'ownership' ? 'active' : ''}`}>Ownership Cost</div>
@@ -223,6 +238,7 @@ const VehicleManager = ({ vehicles, entries, services, onDeleteVehicle, onAddCli
             </div>
           )}
         </div>
+      </div>
       </div>
     </div>
   );

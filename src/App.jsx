@@ -1,13 +1,21 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import BottomNav from './components/layout/BottomNav';
 import Dashboard from './views/Dashboard';
 import FuelLog from './views/FuelLog';
 import TripLog from './views/TripLog';
 import VehicleManager from './views/VehicleManager';
+import Settings from './views/Settings';
 import GlassCard from './components/common/GlassCard';
 import Modal from './components/common/Modal';
+import ErrorBoundary from './components/common/ErrorBoundary';
+import ServiceLog from './views/ServiceLog';
+import NotificationCenter from './components/common/NotificationCenter';
+import PhotoCapture from './components/common/PhotoCapture';
 import { initClient, getFile, createFile, updateFile } from './lib/gdrive';
-import { Car, RefreshCcw, LogOut, ChevronRight, Bike, Fuel, Plus, Route, X, AlertTriangle, Sun, Moon, Zap } from 'lucide-react';
+import { generateId, validateFuelEntry, validateTrip, validateVehicle, validateService, ensureIds, checkDataConsistency } from './lib/validators';
+import { migrateData } from './lib/migrations';
+import { checkAlerts } from './lib/analytics';
+import { Car, RefreshCcw, LogOut, ChevronRight, Bike, Fuel, Plus, Route, X, AlertTriangle, Sun, Moon, Zap, Wifi, WifiOff, Bell } from 'lucide-react';
 
 const PURPOSES = ['Commute', 'Business', 'Personal', 'Errand', 'Long Drive', 'Other'];
 
@@ -15,15 +23,43 @@ const App = () => {
   const [activeView, setActiveView] = useState('dashboard');
   const [user, setUser] = useState(null);
   const [clientId] = useState(localStorage.getItem('gdrive_client_id') || '936797203666-q5rqnu3g44rsm01fbsd9d344c4em98kp.apps.googleusercontent.com');
-  const [data, setData] = useState({ vehicles: [], entries: [], trips: [], services: [] });
+  const [data, setData] = useState({ vehicles: [], entries: [], trips: [], services: [], schemaVersion: 2 });
   const [fileId, setFileId] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [syncStatus, setSyncStatus] = useState('idle'); // idle, syncing, synced, error
   const [modal, setModal] = useState({ open: false, type: 'fuel', mode: 'create', editId: null });
   const [toast, setToast] = useState(null);
   const [theme, setTheme] = useState(localStorage.getItem('ultralog_theme') || 'light');
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [formErrors, setFormErrors] = useState({});
+  const [formWarnings, setFormWarnings] = useState([]);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
 
+  // Online/offline detection
   useEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme);
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  // Theme handling (with auto support)
+  useEffect(() => {
+    if (theme === 'auto') {
+      const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light');
+      
+      const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+      const handler = (e) => document.documentElement.setAttribute('data-theme', e.matches ? 'dark' : 'light');
+      mediaQuery.addEventListener('change', handler);
+      return () => mediaQuery.removeEventListener('change', handler);
+    } else {
+      document.documentElement.setAttribute('data-theme', theme);
+    }
     localStorage.setItem('ultralog_theme', theme);
   }, [theme]);
 
@@ -40,9 +76,9 @@ const App = () => {
   };
 
   const [vehicleForm, setVehicleForm] = useState({ name: '', regNo: '', fuelType: 'Petrol', serviceInterval: '', type: 'car', lastServiceOdo: '', cost: '' });
-  const [fuelForm, setFuelForm] = useState({ vehicleId: '', odometer: '', liters: '', cost: '', date: new Date().toISOString().split('T')[0] });
+  const [fuelForm, setFuelForm] = useState({ vehicleId: '', odometer: '', liters: '', cost: '', date: new Date().toISOString().split('T')[0], photo: null });
   const [tripForm, setTripForm] = useState({ vehicleId: '', startOdometer: '', endOdometer: '', purpose: 'Commute', notes: '', date: new Date().toISOString().split('T')[0] });
-  const [serviceForm, setServiceForm] = useState({ vehicleId: '', odometer: '', cost: '', date: new Date().toISOString().split('T')[0], notes: '' });
+  const [serviceForm, setServiceForm] = useState({ vehicleId: '', odometer: '', cost: '', date: new Date().toISOString().split('T')[0], notes: '', photo: null });
 
   useEffect(() => {
     if (clientId) {
@@ -55,69 +91,116 @@ const App = () => {
     }
   }, [clientId]);
 
-  useEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme);
-    localStorage.setItem('ultralog_theme', theme);
-  }, [theme]);
+  // Debounced save
+  const saveTimeoutRef = React.useRef(null);
 
   const loadData = async () => {
     console.log('Loading data...');
     setLoading(true);
     try {
+      let loaded = null;
       if (window.gapi?.client?.drive) {
         console.log('GDocs client detected, fetching file...');
         const result = await getFile('mileage_data.json');
         if (result) {
           console.log('File found, ID:', result.id);
           setFileId(result.id);
-          const loaded = result.data;
-          setData({ vehicles: [], entries: [], trips: [], ...loaded });
+          loaded = result.data;
         } else {
-          console.log('No mileage_data.json found on Drive.');
+          // FIX: Create file for new users
+          console.log('No mileage_data.json found. Creating new file...');
+          const initialData = { vehicles: [], entries: [], trips: [], services: [], schemaVersion: 2 };
+          const createResult = await createFile('mileage_data.json', initialData);
+          if (createResult?.id) {
+            setFileId(createResult.id);
+            console.log('Created new Drive file:', createResult.id);
+          }
+          loaded = initialData;
         }
       } else {
         console.log('Using local data fallback.');
-        const localData = JSON.parse(localStorage.getItem('mileage_data_local')) || { vehicles: [], entries: [], trips: [], services: [] };
-        setData({ vehicles: [], entries: [], trips: [], services: [], ...localData });
+        loaded = JSON.parse(localStorage.getItem('mileage_data_local')) || 
+          { vehicles: [], entries: [], trips: [], services: [], schemaVersion: 2 };
+      }
+
+      // Run migration
+      const { data: migrated, migrated: didMigrate } = migrateData(loaded);
+
+      // Ensure all entities have IDs
+      const withIds = ensureIds(migrated);
+
+      // Run consistency checks
+      const { cleaned, issues } = checkDataConsistency(withIds);
+      if (issues.length > 0) {
+        console.warn('[Data Health]', issues);
+      }
+
+      const safeData = { vehicles: [], entries: [], trips: [], services: [], ...cleaned };
+      setData(safeData);
+      setSyncStatus('synced');
+
+      // If migrated, save back immediately
+      if (didMigrate || issues.length > 0) {
+        console.log('[Migration] Saving migrated data back...');
+        if (fileId && window.gapi?.client?.drive) {
+          await updateFile(fileId, safeData);
+        } else {
+          localStorage.setItem('mileage_data_local', JSON.stringify(safeData));
+        }
       }
     } catch (err) {
       console.error('loadData error:', err);
+      setSyncStatus('error');
     }
     setLoading(false);
   };
 
-  const saveData = async (newData) => {
-    const safeData = { vehicles: [], entries: [], trips: [], services: [], ...newData };
+  const saveData = useCallback(async (newData) => {
+    const safeData = { vehicles: [], entries: [], trips: [], services: [], schemaVersion: 2, ...newData };
     setData(safeData);
-    if (fileId && window.gapi?.client?.drive) {
-      await updateFile(fileId, safeData);
-    } else {
-      localStorage.setItem('mileage_data_local', JSON.stringify(safeData));
+    setSyncStatus('syncing');
+
+    // Debounce Drive saves (500ms)
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current);
     }
-  };
+
+    saveTimeoutRef.current = setTimeout(async () => {
+      try {
+        if (fileId && window.gapi?.client?.drive) {
+          await updateFile(fileId, safeData);
+          setSyncStatus('synced');
+        } else {
+          localStorage.setItem('mileage_data_local', JSON.stringify(safeData));
+          setSyncStatus('synced');
+        }
+      } catch (err) {
+        console.error('saveData error:', err);
+        setSyncStatus('error');
+        // Fallback: save to localStorage on Drive failure
+        localStorage.setItem('mileage_data_local', JSON.stringify(safeData));
+        showToast('Cloud save failed. Saved locally.', 'error');
+      }
+    }, 500);
+  }, [fileId]);
 
   const handleLogin = async () => {
     console.log('Initiating handleLogin with Client ID:', clientId);
     try {
       const auth = await initClient(clientId);
       if (auth) {
-        console.log('Auth instance obtained. Current user signed in:', auth.isSignedIn.get());
         if (auth.isSignedIn.get()) {
-          console.log('User already signed in, retrieving profile...');
           const userObj = auth.currentUser.get();
           setUser(userObj);
           loadData();
         } else {
-          console.log('Prompting for sign-in...');
           const userObj = await auth.signIn({ prompt: 'select_account' });
-          console.log('Sign-in successful:', userObj.getBasicProfile().getName());
           setUser(userObj);
           loadData();
         }
       }
     } catch (err) {
       console.error('Login process failed:', err);
-      // If server_error, it usually means Test User issue or configuration mismatch
       if (err.error === 'server_error' || err.error === 'idpiframe_initialization_failed') {
         alert("Google Error: Sign-in failed. If your app is in 'Testing' mode, please ensure your email is added as a 'Test User' in Google Cloud Console.");
       }
@@ -131,17 +214,25 @@ const App = () => {
 
   const handleLogout = () => {
     if (window.gapi?.auth2) window.gapi.auth2.getAuthInstance().signOut();
-    setUser(null); setFileId(null); setData({ vehicles: [], entries: [], trips: [], services: [] });
+    setUser(null); setFileId(null); setData({ vehicles: [], entries: [], trips: [], services: [], schemaVersion: 2 });
   };
 
   // ---- VEHICLE ----
   const submitVehicle = (e) => {
     e.preventDefault();
+    const validation = validateVehicle(vehicleForm, data.vehicles);
+    if (!validation.valid) {
+      setFormErrors(validation.errors);
+      return;
+    }
+    setFormErrors({});
+    setFormWarnings(validation.warnings);
+
     let newData;
     if (modal.mode === 'edit') {
       newData = { ...data, vehicles: data.vehicles.map(v => v.id === modal.editId ? { ...vehicleForm, id: v.id } : v) };
     } else {
-      newData = { ...data, vehicles: [...data.vehicles, { ...vehicleForm, id: Date.now().toString() }] };
+      newData = { ...data, vehicles: [...data.vehicles, { ...vehicleForm, id: generateId() }] };
     }
     saveData(newData);
     setModal({ ...modal, open: false });
@@ -149,22 +240,48 @@ const App = () => {
     showToast(modal.mode === 'edit' ? 'Vehicle updated' : 'Vehicle added');
   };
 
+  // FIX: handleMarkServiced now also creates a service log entry
   const handleMarkServiced = (vehicleId) => {
     const ve = data.entries.filter(e => e.vehicleId === vehicleId).sort((a, b) => new Date(a.date) - new Date(b.date));
     const lastOdo = ve.length > 0 ? ve[ve.length - 1].odometer : '0';
-    const newData = { ...data, vehicles: data.vehicles.map(v => v.id === vehicleId ? { ...v, lastServiceOdo: lastOdo } : v) };
+    const today = new Date().toISOString().split('T')[0];
+    
+    const newService = {
+      id: generateId(),
+      vehicleId,
+      odometer: lastOdo,
+      cost: '0',
+      date: today,
+      notes: 'Routine service (marked from garage)'
+    };
+
+    const newData = {
+      ...data,
+      vehicles: data.vehicles.map(v => v.id === vehicleId ? { ...v, lastServiceOdo: lastOdo } : v),
+      services: [...(data.services || []), newService].sort((a, b) => new Date(b.date) - new Date(a.date))
+    };
     saveData(newData);
     showToast('Service record updated ✓');
   };
 
-  // ---- FUEL ----
+  // ---- FUEL ---- (FIX: ID-based CRUD)
   const submitFuel = (e) => {
     e.preventDefault();
+    const validation = validateFuelEntry(fuelForm, data.entries, data.vehicles);
+    if (!validation.valid) {
+      setFormErrors(validation.errors);
+      setFormWarnings(validation.warnings);
+      return;
+    }
+    setFormErrors({});
+    setFormWarnings(validation.warnings);
+
     let newData;
     if (modal.mode === 'edit') {
-      newData = { ...data, entries: data.entries.map((entry, idx) => idx === modal.editId ? fuelForm : entry) };
+      // FIX: Use ID-based editing instead of index
+      newData = { ...data, entries: data.entries.map(entry => entry.id === modal.editId ? { ...fuelForm, id: entry.id } : entry) };
     } else {
-      newData = { ...data, entries: [...data.entries, fuelForm].sort((a, b) => new Date(a.date) - new Date(b.date)) };
+      newData = { ...data, entries: [...data.entries, { ...fuelForm, id: generateId() }].sort((a, b) => new Date(a.date) - new Date(b.date)) };
     }
     saveData(newData);
     setModal({ ...modal, open: false });
@@ -172,23 +289,32 @@ const App = () => {
     showToast(modal.mode === 'edit' ? 'Log updated' : 'Fuel log saved');
   };
 
-  const deleteEntry = (index) => {
+  // FIX: ID-based delete
+  const deleteEntry = (entryId) => {
     showConfirm('Delete this fuel log permanently?', () => {
-      const realIndex = data.entries.length - 1 - index;
-      saveData({ ...data, entries: data.entries.filter((_, i) => i !== realIndex) });
+      saveData({ ...data, entries: data.entries.filter(e => e.id !== entryId) });
       showToast('Log deleted', 'error');
     });
   };
 
-  // ---- Trips ----
+  // ---- Trips ---- (FIX: ID-based CRUD)
   const submitTrip = (e) => {
     e.preventDefault();
+    const validation = validateTrip(tripForm, data.vehicles);
+    if (!validation.valid) {
+      setFormErrors(validation.errors);
+      setFormWarnings(validation.warnings);
+      return;
+    }
+    setFormErrors({});
+    setFormWarnings(validation.warnings);
+
     const trips = data.trips || [];
     let newTrips;
     if (modal.mode === 'edit') {
-      newTrips = trips.map((t, i) => i === modal.editId ? tripForm : t);
+      newTrips = trips.map(t => t.id === modal.editId ? { ...tripForm, id: t.id } : t);
     } else {
-      newTrips = [...trips, tripForm].sort((a, b) => new Date(a.date) - new Date(b.date));
+      newTrips = [...trips, { ...tripForm, id: generateId() }].sort((a, b) => new Date(a.date) - new Date(b.date));
     }
     saveData({ ...data, trips: newTrips });
     setModal({ ...modal, open: false });
@@ -196,24 +322,30 @@ const App = () => {
     showToast(modal.mode === 'edit' ? 'Trip updated' : 'Trip logged');
   };
 
-  const deleteTrip = (index) => {
+  // FIX: ID-based delete
+  const deleteTrip = (tripId) => {
     showConfirm('Delete this trip log permanently?', () => {
-      const sorted = [...(data.trips || [])].sort((a, b) => new Date(b.date) - new Date(a.date));
-      const tripToDelete = sorted[index];
-      saveData({ ...data, trips: (data.trips || []).filter(t => t !== tripToDelete) });
+      saveData({ ...data, trips: (data.trips || []).filter(t => t.id !== tripId) });
       showToast('Trip deleted', 'error');
     });
   };
 
-  // ---- SERVICES ----
+  // ---- SERVICES ---- (FIX: ID-based CRUD)
   const submitService = (e) => {
     e.preventDefault();
+    const validation = validateService(serviceForm, data.vehicles);
+    if (!validation.valid) {
+      setFormErrors(validation.errors);
+      return;
+    }
+    setFormErrors({});
+
     const services = data.services || [];
     let newServices;
     if (modal.mode === 'edit') {
-      newServices = services.map((s, i) => i === modal.editId ? serviceForm : s);
+      newServices = services.map(s => s.id === modal.editId ? { ...serviceForm, id: s.id } : s);
     } else {
-      newServices = [...services, serviceForm].sort((a, b) => new Date(b.date) - new Date(a.date)); // Sort descending
+      newServices = [...services, { ...serviceForm, id: generateId() }].sort((a, b) => new Date(b.date) - new Date(a.date));
     }
     saveData({ ...data, services: newServices });
     setModal({ ...modal, open: false });
@@ -221,15 +353,19 @@ const App = () => {
     showToast(modal.mode === 'edit' ? 'Service updated' : 'Service logged');
   };
 
-  const deleteService = (index) => {
+  // FIX: ID-based delete
+  const deleteService = (serviceId) => {
     showConfirm('Delete this service record permanently?', () => {
       const services = data.services || [];
-      saveData({ ...data, services: services.filter((_, i) => i !== index) });
+      saveData({ ...data, services: services.filter(s => s.id !== serviceId) });
       showToast('Service deleted', 'error');
     });
   };
 
-  const openModal = (type, mode = 'create', dataToEdit = null, index = null) => {
+  // FIX: openModal always uses ID for editId
+  const openModal = (type, mode = 'create', dataToEdit = null) => {
+    setFormErrors({});
+    setFormWarnings([]);
     if (mode === 'edit' && dataToEdit) {
       if (type === 'vehicle') setVehicleForm(dataToEdit);
       else if (type === 'fuel') setFuelForm(dataToEdit);
@@ -237,34 +373,42 @@ const App = () => {
       else if (type === 'service') setServiceForm(dataToEdit);
     } else {
       if (type === 'vehicle') setVehicleForm({ name: '', regNo: '', fuelType: 'Petrol', serviceInterval: '', type: 'car', lastServiceOdo: '', cost: '' });
-      else if (type === 'fuel') setFuelForm({ vehicleId: data.vehicles[0]?.id || '', odometer: '', liters: '', cost: '', date: new Date().toISOString().split('T')[0] });
+      else if (type === 'fuel') setFuelForm({ vehicleId: data.vehicles[0]?.id || '', odometer: '', liters: '', cost: '', date: new Date().toISOString().split('T')[0], photo: null });
       else if (type === 'trip') setTripForm({ vehicleId: data.vehicles[0]?.id || '', startOdometer: '', endOdometer: '', purpose: 'Commute', notes: '', date: new Date().toISOString().split('T')[0] });
-      else if (type === 'service') setServiceForm({ vehicleId: data.vehicles[0]?.id || '', odometer: '', cost: '', date: new Date().toISOString().split('T')[0], notes: '' });
+      else if (type === 'service') setServiceForm({ vehicleId: data.vehicles[0]?.id || '', odometer: '', cost: '', date: new Date().toISOString().split('T')[0], notes: '', photo: null });
     }
-    setModal({ open: true, type, mode, editId: mode === 'edit' ? (dataToEdit?.id || index) : null });
+    // FIX: Always use the entity's own ID for editing
+    setModal({ open: true, type, mode, editId: mode === 'edit' ? dataToEdit?.id : null });
   };
 
+  // Haptic feedback helper
+  const haptic = (pattern = [10]) => {
+    if (navigator.vibrate) navigator.vibrate(pattern);
+  };
+
+  // Login Screen — FIX: respects theme
   if (!user) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-screen bg-[#F8FAFC] p-6 relative">
-        <div className="premium-glass-card w-full max-w-md p-12 flex flex-col items-center text-center relative z-10 animate-fade-up">
+      <div className="flex flex-col items-center justify-center min-h-screen p-6 relative" style={{ background: 'var(--bg-primary)' }}>
+        <div className="premium-glass-card w-full max-w-md p-12 flex flex-col items-center text-center relative z-10 animate-fade-up" style={{ background: 'var(--bg-card)', border: '1px solid var(--border)' }}>
           {/* Main Illustration/Icon */}
           <div className="mb-10">
             <div className="text-7xl drop-shadow-xl">🚗</div>
           </div>
 
-          <h1 className="text-4xl font-extrabold text-slate-900 tracking-tight mb-3 leading-tight">
+          <h1 className="text-4xl font-extrabold tracking-tight mb-3 leading-tight" style={{ color: 'var(--text-primary)' }}>
             Welcome to <br /> Mileage Tracker
           </h1>
 
-          <p className="text-[14px] font-medium text-slate-400 mb-10 leading-relaxed px-4">
+          <p className="text-[14px] font-medium mb-10 leading-relaxed px-4" style={{ color: 'var(--text-secondary)' }}>
             Sign in with your Google account to continue
           </p>
 
           <div className="w-full flex flex-col gap-4">
             <button
-              onClick={handleLogin}
-              className="w-full flex items-center justify-center gap-4 bg-indigo text-white font-bold py-5 px-6 rounded-3xl transition-all active:scale-[0.97] shadow-xl hover:bg-indigo/90"
+              onClick={() => { haptic(); handleLogin(); }}
+              className="w-full flex items-center justify-center gap-4 font-bold py-5 px-6 rounded-3xl transition-all active:scale-[0.97] shadow-xl"
+              style={{ background: 'var(--accent)', color: 'var(--bg-primary)' }}
             >
               <div className="w-6 h-6 bg-white rounded-full p-1 flex items-center justify-center">
                 <img
@@ -277,15 +421,16 @@ const App = () => {
             </button>
 
             <button
-              onClick={handleLocalLogin}
-              className="w-full py-5 px-6 text-xs font-black tracking-widest uppercase text-slate-400 hover:text-slate-600 bg-slate-50 hover:bg-slate-100 rounded-3xl border border-slate-100 transition-all active:scale-[0.97] flex items-center justify-center gap-3"
+              onClick={() => { haptic(); handleLocalLogin(); }}
+              className="w-full py-5 px-6 text-xs font-black tracking-widest uppercase rounded-3xl border transition-all active:scale-[0.97] flex items-center justify-center gap-3"
+              style={{ color: 'var(--text-secondary)', background: 'var(--bg-secondary)', borderColor: 'var(--border)' }}
             >
-              <Zap size={14} className="text-slate-300" />
+              <Zap size={14} style={{ opacity: 0.5 }} />
               <span>Offline Access</span>
             </button>
           </div>
 
-          <div className="mt-12 text-[12px] font-medium text-slate-300 leading-relaxed max-w-[240px]">
+          <div className="mt-12 text-[12px] font-medium leading-relaxed max-w-[240px]" style={{ color: 'var(--text-secondary)', opacity: 0.5 }}>
             Your data is stored securely in your personal Google Drive
           </div>
         </div>
@@ -296,169 +441,133 @@ const App = () => {
   const trips = data.trips || [];
   const services = data.services || [];
 
-  return (
-    <div id="root">
-      {loading && <div className="fixed top-0 left-0 right-0 h-1 bg-accent z-[20000] animate-pulse"></div>}
+  // Form error display helper
+  const FieldError = ({ field }) => {
+    if (!formErrors[field]) return null;
+    return <div className="text-xs font-bold text-danger mt-1">{formErrors[field]}</div>;
+  };
 
-      <div className="scroll-container">
-        <div className="relative z-10 flex flex-col gap-8">
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
+      {loading && <div style={{ position: 'fixed', top: 0, left: 0, right: 0, height: 2, background: 'var(--accent)', zIndex: 20000 }} className="animate-pulse"></div>}
+
+      {/* Offline Banner */}
+      {!isOnline && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, height: 32, background: 'var(--warning)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, zIndex: 19000, fontSize: 'var(--type-caption)', fontWeight: 900, color: 'white' }}>
+          <WifiOff size={14} />
+          Offline Mode
+        </div>
+      )}
+
+      {/* Sync Status */}
+      {syncStatus === 'syncing' && (
+        <div style={{ position: 'fixed', top: 8, right: 16, zIndex: 19000, fontSize: 'var(--type-caption)', fontWeight: 900, color: 'var(--accent)', display: 'flex', alignItems: 'center', gap: 4, background: 'var(--bg-card)', padding: '4px 12px', borderRadius: 'var(--radius-pill)', border: '1px solid var(--border)' }} className="animate-pulse">
+          <RefreshCcw size={10} className="animate-spin" /> Syncing...
+        </div>
+      )}
+
+      {/* Views — each view owns its own scroll via view-container/view-content */}
+      <div key={activeView} className="page-transition" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
           {activeView === 'dashboard' && (
-            <Dashboard
-              vehicles={data.vehicles}
-              entries={data.entries}
-              trips={trips}
-              user={user}
-              isSynced={!!fileId}
-              onAddClick={() => openModal('fuel')}
-              onMarkServiced={handleMarkServiced}
-              onSettingsClick={() => setActiveView('settings')}
-              onViewChange={setActiveView}
-            />
+            <ErrorBoundary name="Dashboard">
+              <Dashboard
+                vehicles={data.vehicles}
+                entries={data.entries}
+                trips={trips}
+                user={user}
+                isSynced={!!fileId}
+                onAddClick={() => { haptic(); openModal('fuel'); }}
+                onMarkServiced={handleMarkServiced}
+                onSettingsClick={() => setActiveView('settings')}
+                onViewChange={setActiveView}
+                onNotificationsClick={() => setNotificationsOpen(true)}
+              />
+            </ErrorBoundary>
           )}
           {activeView === 'fuel' && (
-            <FuelLog
-              vehicles={data.vehicles}
-              entries={data.entries}
-              onAddClick={() => openModal('fuel')}
-              onEdit={(entry, idx) => openModal('fuel', 'edit', entry, idx)}
-              onDelete={deleteEntry}
-            />
+            <ErrorBoundary name="Fuel Log">
+              <FuelLog
+                vehicles={data.vehicles}
+                entries={data.entries}
+                onAddClick={() => { haptic(); openModal('fuel'); }}
+                onEdit={(entry) => openModal('fuel', 'edit', entry)}
+                onDelete={(entryId) => { haptic([15]); deleteEntry(entryId); }}
+              />
+            </ErrorBoundary>
           )}
           {activeView === 'trips' && (
-            <TripLog
-              vehicles={data.vehicles}
-              trips={trips}
-              onAddClick={() => openModal('trip')}
-              onEdit={(trip, idx) => openModal('trip', 'edit', trip, idx)}
-              onDelete={deleteTrip}
-            />
+            <ErrorBoundary name="Trip Log">
+              <TripLog
+                vehicles={data.vehicles}
+                trips={trips}
+                onAddClick={() => { haptic(); openModal('trip'); }}
+                onEdit={(trip) => openModal('trip', 'edit', trip)}
+                onDelete={(tripId) => { haptic([15]); deleteTrip(tripId); }}
+              />
+            </ErrorBoundary>
           )}
           {activeView === 'vehicles' && (
-            <VehicleManager
-              vehicles={data.vehicles}
-              entries={data.entries}
-              services={services}
-              onAddClick={() => openModal('vehicle')}
-              onEdit={(v) => openModal('vehicle', 'edit', v)}
-              onMarkServiced={handleMarkServiced}
-              onDeleteVehicle={(id) => {
-                const hasLogs = data.entries.some(e => e.vehicleId === id);
-                if (hasLogs) { showToast('Vehicle has fuel logs. Cannot delete.', 'error'); return; }
-                showConfirm('Permanently decommission this vehicle?', () => {
-                  saveData({ ...data, vehicles: data.vehicles.filter(v => v.id !== id) });
-                  showToast('Vehicle removed', 'error');
-                });
-              }}
-            />
+            <ErrorBoundary name="Garage">
+              <VehicleManager
+                vehicles={data.vehicles}
+                entries={data.entries}
+                services={services}
+                onAddClick={() => { haptic(); openModal('vehicle'); }}
+                onEdit={(v) => openModal('vehicle', 'edit', v)}
+                onMarkServiced={handleMarkServiced}
+                onDeleteVehicle={(id) => {
+                  const hasLogs = data.entries.some(e => e.vehicleId === id);
+                  if (hasLogs) { showToast('Vehicle has fuel logs. Cannot delete.', 'error'); return; }
+                  showConfirm('Permanently decommission this vehicle?', () => {
+                    haptic([15]);
+                    saveData({ ...data, vehicles: data.vehicles.filter(v => v.id !== id) });
+                    showToast('Vehicle removed', 'error');
+                  });
+                }}
+              />
+            </ErrorBoundary>
           )}
           {activeView === 'services' && (
-            <React.Suspense fallback={<div>Loading...</div>}>
-              {React.createElement(React.lazy(() => import('./views/ServiceLog')), {
-                vehicles: data.vehicles,
-                services: services,
-                onAddClick: () => openModal('service'),
-                onEdit: (service, idx) => openModal('service', 'edit', service, idx),
-                onDelete: deleteService
-              })}
-            </React.Suspense>
+            <ErrorBoundary name="Service Log">
+              <ServiceLog
+                vehicles={data.vehicles}
+                services={services}
+                onAddClick={() => { haptic(); openModal('service'); }}
+                onEdit={(service) => openModal('service', 'edit', service)}
+                onDelete={(serviceId) => { haptic([15]); deleteService(serviceId); }}
+              />
+            </ErrorBoundary>
           )}
           {activeView === 'settings' && (
-            <div className="flex flex-col gap-10 px-2 animate-fade-up pb-32">
-              <div className="flex items-center gap-5 pt-8">
-                <button onClick={() => setActiveView('dashboard')} className="w-12 h-12 rounded-full bg-bg-card flex items-center justify-center border border-border shadow-sm active:scale-90 transition-all">
-                  <ChevronRight size={20} className="rotate-180 text-text-secondary" />
-                </button>
-                <h1 className="text-4xl font-extrabold tracking-tight text-text-primary">Settings</h1>
-              </div>
-
-              {/* Account Section */}
-              <div className="premium-card">
-                <div className="flex items-center gap-6 mb-8">
-                  <div className="w-16 h-16 rounded-2xl bg-accent-soft border border-border overflow-hidden flex items-center justify-center">
-                    {user.getBasicProfile().getImageUrl() ? (
-                      <img src={user.getBasicProfile().getImageUrl()} className="w-full h-full object-cover" alt="profile" />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center font-black text-xl text-accent">
-                        {user.getBasicProfile().getName()?.substring(0, 2).toUpperCase()}
-                      </div>
-                    )}
-                  </div>
-                  <div className="flex-1">
-                    <div className="text-xl font-bold text-text-primary mb-1">{user.getBasicProfile().getName()}</div>
-                    <div className="text-xs font-semibold text-text-secondary uppercase tracking-widest">{user.getBasicProfile().getEmail()}</div>
-                  </div>
-                </div>
-
-                <button
-                  onClick={handleLogout}
-                  className="btn-premium-danger w-full"
-                >
-                  <LogOut size={16} />
-                  <span>Deauthorize Device</span>
-                </button>
-              </div>
-
-              {/* Appearance Section */}
-              <div className="flex flex-col gap-5">
-                <div className="flex items-center justify-between px-2">
-                  <h2 className="text-xs font-bold uppercase tracking-widest text-text-secondary">Visual Theme</h2>
-                  <div className="text-[10px] font-black text-accent">{theme.toUpperCase()} MODE</div>
-                </div>
-                <div className="pill-segmented">
-                  <div
-                    onClick={() => setTheme('light')}
-                    className={`pill-item ${theme === 'light' ? 'active' : ''}`}
-                  >
-                    LIGHT
-                  </div>
-                  <div
-                    onClick={() => setTheme('dark')}
-                    className={`pill-item ${theme === 'dark' ? 'active' : ''}`}
-                  >
-                    DARK
-                  </div>
-                </div>
-              </div>
-
-              {/* Storage Section */}
-              <div className="flex flex-col gap-5">
-                <h2 className="text-xs font-bold uppercase tracking-widest text-text-secondary px-2">Fleet Archive</h2>
-                <div className="premium-card !p-10">
-                  <div className="flex items-center gap-8 mb-8">
-                    <div className="fintech-icon-box shrink-0 shadow-lg">
-                      <Fuel size={24} />
-                    </div>
-                    <div className="flex flex-col gap-1">
-                      <div className="text-xl font-extrabold text-text-primary tracking-tight">{data.entries.length} Operational Records</div>
-                      <div className="text-[11px] font-bold text-text-secondary uppercase tracking-[0.2em] opacity-60">{data.vehicles.length} Registered Machines</div>
-                    </div>
-                  </div>
-
-                  <div className="h-[1px] bg-border w-full mb-8 opacity-50"></div>
-
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <div className={`w-2.5 h-2.5 rounded-full ${fileId ? 'bg-success shadow-[0_0_10px_rgba(16,185,129,0.5)]' : 'bg-warning animate-pulse shadow-[0_0_10px_rgba(245,158,11,0.5)]'}`}></div>
-                      <div className="text-[10px] font-black text-text-secondary uppercase tracking-[0.25em]">
-                        {fileId ? 'Cloud Sync Active' : 'Offline Mode'}
-                      </div>
-                    </div>
-                    {fileId && <div className="text-[10px] font-bold text-accent px-3 py-1 bg-accent-soft rounded-full">ENCRYPTED</div>}
-                  </div>
-                </div>
-              </div>
-            </div>
+            <ErrorBoundary name="Settings">
+              <Settings
+                user={user}
+                data={data}
+                fileId={fileId}
+                theme={theme}
+                setTheme={setTheme}
+                onLogout={handleLogout}
+                onBack={() => setActiveView('dashboard')}
+              />
+            </ErrorBoundary>
           )}
         </div>
-      </div>
 
-      <BottomNav activeView={activeView} setActiveView={setActiveView} />
+      <BottomNav 
+        activeView={activeView} 
+        setActiveView={(view) => { haptic([5]); setActiveView(view); }} 
+        badges={{
+          services: (() => {
+            try { return checkAlerts(data.vehicles, data.entries).length; } catch(e) { return 0; }
+          })()
+        }}
+      />
 
       {/* TOAST */}
       {toast && (
         <div className="toast-container">
           <div className={`toast ${toast.type === 'error' ? 'toast-error' : ''}`}>
-            {toast.type === 'error' ? <LogOut size={16} /> : <ChevronRight size={16} />}
+            {toast.type === 'error' ? <AlertTriangle size={16} /> : <ChevronRight size={16} />}
             {toast.message}
           </div>
         </div>
@@ -498,13 +607,25 @@ const App = () => {
       {/* MODAL */}
       <Modal
         isOpen={modal.open}
-        onClose={() => setModal({ ...modal, open: false })}
+        onClose={() => { setModal({ ...modal, open: false }); setFormErrors({}); setFormWarnings([]); }}
         title={
           modal.mode === 'edit'
             ? (modal.type === 'fuel' ? 'Edit Log' : modal.type === 'trip' ? 'Edit Trip' : modal.type === 'service' ? 'Edit Service' : 'Edit Vehicle')
             : (modal.type === 'fuel' ? 'New Fuel Log' : modal.type === 'trip' ? 'Log Trip' : modal.type === 'service' ? 'Log Service' : 'Add Vehicle')
         }
       >
+        {/* Validation Warnings */}
+        {formWarnings.length > 0 && (
+          <div className="mb-4 p-3 rounded-2xl bg-warning-soft border border-warning/20">
+            {formWarnings.map((w, i) => (
+              <div key={i} className="text-xs font-bold text-warning flex items-start gap-2 mb-1 last:mb-0">
+                <AlertTriangle size={12} className="shrink-0 mt-0.5" />
+                {w}
+              </div>
+            ))}
+          </div>
+        )}
+
         {modal.type === 'fuel' && (
           <form onSubmit={submitFuel} className="flex flex-col gap-6">
             <div className="flex flex-col gap-2">
@@ -513,30 +634,40 @@ const App = () => {
                 <option value="" disabled>Select Vehicle</option>
                 {data.vehicles.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
               </select>
+              <FieldError field="vehicleId" />
             </div>
             <div className="flex flex-col gap-2">
               <label className="label-small">Odometer (KM)</label>
               <input type="number" className="input-glass" value={fuelForm.odometer} onChange={e => setFuelForm({ ...fuelForm, odometer: e.target.value })} required />
+              <FieldError field="odometer" />
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="flex flex-col gap-2">
                 <label className="label-small">Liters</label>
                 <input type="number" step="0.01" className="input-glass" value={fuelForm.liters} onChange={e => setFuelForm({ ...fuelForm, liters: e.target.value })} required />
+                <FieldError field="liters" />
               </div>
               <div className="flex flex-col gap-2">
                 <label className="label-small">Cost (₹)</label>
                 <input type="number" step="0.01" className="input-glass" value={fuelForm.cost} onChange={e => setFuelForm({ ...fuelForm, cost: e.target.value })} required />
+                <FieldError field="cost" />
               </div>
             </div>
             <div className="flex flex-col gap-2">
               <label className="label-small">Date</label>
               <input type="date" className="input-glass" value={fuelForm.date} onChange={e => setFuelForm({ ...fuelForm, date: e.target.value })} required />
+              <FieldError field="date" />
             </div>
             {fuelForm.liters > 0 && fuelForm.cost > 0 && (
               <div className="text-xs font-black text-secondary text-center">
                 ₹{(Number(fuelForm.cost) / Number(fuelForm.liters)).toFixed(2)} per liter
               </div>
             )}
+            <PhotoCapture 
+              value={fuelForm.photo} 
+              onChange={(photo) => setFuelForm({ ...fuelForm, photo })} 
+              label="Receipt Photo (optional)" 
+            />
             <button type="submit" className="premium-btn w-full mt-2 text-bg-primary" style={{ color: 'var(--bg-primary)' }}>
               {modal.mode === 'edit' ? 'CONFIRM CHANGES' : 'SAVE ENTRY'}
             </button>
@@ -551,15 +682,18 @@ const App = () => {
                 <option value="" disabled>Select Vehicle</option>
                 {data.vehicles.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
               </select>
+              <FieldError field="vehicleId" />
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="flex flex-col gap-2">
                 <label className="label-small">Start KM</label>
                 <input type="number" className="input-glass" value={tripForm.startOdometer} onChange={e => setTripForm({ ...tripForm, startOdometer: e.target.value })} required />
+                <FieldError field="startOdometer" />
               </div>
               <div className="flex flex-col gap-2">
                 <label className="label-small">End KM</label>
                 <input type="number" className="input-glass" value={tripForm.endOdometer} onChange={e => setTripForm({ ...tripForm, endOdometer: e.target.value })} required />
+                <FieldError field="endOdometer" />
               </div>
             </div>
             {tripForm.startOdometer && tripForm.endOdometer && Number(tripForm.endOdometer) > Number(tripForm.startOdometer) && (
@@ -576,6 +710,7 @@ const App = () => {
             <div className="flex flex-col gap-2">
               <label className="label-small">Date</label>
               <input type="date" className="input-glass" value={tripForm.date} onChange={e => setTripForm({ ...tripForm, date: e.target.value })} required />
+              <FieldError field="date" />
             </div>
             <div className="flex flex-col gap-2">
               <label className="label-small">Notes (optional)</label>
@@ -595,23 +730,32 @@ const App = () => {
                 <option value="" disabled>Select Vehicle</option>
                 {data.vehicles.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
               </select>
+              <FieldError field="vehicleId" />
             </div>
             <div className="flex flex-col gap-2">
               <label className="label-small">Odometer (KM)</label>
               <input type="number" className="input-glass" value={serviceForm.odometer} onChange={e => setServiceForm({ ...serviceForm, odometer: e.target.value })} required />
+              <FieldError field="odometer" />
             </div>
             <div className="flex flex-col gap-2">
               <label className="label-small">Cost (₹)</label>
               <input type="number" step="0.01" className="input-glass" value={serviceForm.cost} onChange={e => setServiceForm({ ...serviceForm, cost: e.target.value })} required />
+              <FieldError field="cost" />
             </div>
             <div className="flex flex-col gap-2">
               <label className="label-small">Date</label>
               <input type="date" className="input-glass" value={serviceForm.date} onChange={e => setServiceForm({ ...serviceForm, date: e.target.value })} required />
+              <FieldError field="date" />
             </div>
             <div className="flex flex-col gap-2">
               <label className="label-small">Notes (Maintenance Details)</label>
               <input className="input-glass" placeholder="e.g. Oil change, brake pads..." value={serviceForm.notes} onChange={e => setServiceForm({ ...serviceForm, notes: e.target.value })} />
             </div>
+            <PhotoCapture 
+              value={serviceForm.photo} 
+              onChange={(photo) => setServiceForm({ ...serviceForm, photo })} 
+              label="Service Receipt (optional)" 
+            />
             <button type="submit" className="premium-btn w-full mt-2" style={{ color: 'var(--bg-primary)' }}>
               {modal.mode === 'edit' ? 'UPDATE SERVICE' : 'LOG SERVICE'}
             </button>
@@ -627,10 +771,12 @@ const App = () => {
             <div className="flex flex-col gap-2">
               <label className="label-small">Vehicle Name</label>
               <input className="input-glass" value={vehicleForm.name} onChange={e => setVehicleForm({ ...vehicleForm, name: e.target.value })} required />
+              <FieldError field="name" />
             </div>
             <div className="flex flex-col gap-2">
               <label className="label-small">Plate Number</label>
               <input className="input-glass" value={vehicleForm.regNo} onChange={e => setVehicleForm({ ...vehicleForm, regNo: e.target.value })} required />
+              <FieldError field="regNo" />
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="flex flex-col gap-2">
@@ -642,6 +788,7 @@ const App = () => {
               <div className="flex flex-col gap-2">
                 <label className="label-small h-[28px] flex items-end">Service Interval</label>
                 <input type="number" className="input-glass" value={vehicleForm.serviceInterval} onChange={e => setVehicleForm({ ...vehicleForm, serviceInterval: e.target.value })} />
+                <FieldError field="serviceInterval" />
               </div>
             </div>
             <div className="grid grid-cols-2 gap-4">
@@ -660,6 +807,14 @@ const App = () => {
           </form>
         )}
       </Modal>
+
+      {/* NOTIFICATION CENTER */}
+      <NotificationCenter
+        vehicles={data.vehicles}
+        entries={data.entries}
+        isOpen={notificationsOpen}
+        onClose={() => setNotificationsOpen(false)}
+      />
     </div>
   );
 };

@@ -1,5 +1,6 @@
 /**
  * Core Analytics Logic for Mileage Tracker
+ * FIX: Proper vehicle-grouped calculations, baseline correction
  */
 
 /**
@@ -8,27 +9,50 @@
 export const calculateEfficiency = (current, previous) => {
   if (!current || !previous) return 0;
   const distance = Number(current.odometer) - Number(previous.odometer);
-  // Mileage calculation assumes fuel from previous entry powers current interval distance
   const liters = Number(previous.liters);
   if (distance <= 0 || liters <= 0) return 0;
   return Number((distance / liters).toFixed(2));
 };
 
 /**
- * Generates monthly efficiency/spending trends.
+ * FIX: Generates monthly efficiency/spending trends — properly groups by vehicle
  */
 export const getMonthlyTrends = (entries) => {
   if (entries.length < 2) return [];
-  const trends = {};
-  entries.forEach((entry, i) => {
-    const date = new Date(entry.date);
-    const monthKey = `${date.toLocaleString('default', { month: 'short' })} ${date.getFullYear().toString().substr(-2)}`;
-    if (!trends[monthKey]) trends[monthKey] = { efficiency: 0, count: 0, spend: 0 };
-    const prev = entries.slice(0, i).reverse().find(pe => pe.vehicleId === entry.vehicleId);
-    const eff = calculateEfficiency(entry, prev);
-    if (eff > 0) { trends[monthKey].efficiency += eff; trends[monthKey].count += 1; }
-    trends[monthKey].spend += Number(entry.cost);
+  
+  // Group entries by vehicle first
+  const byVehicle = {};
+  entries.forEach(entry => {
+    if (!byVehicle[entry.vehicleId]) byVehicle[entry.vehicleId] = [];
+    byVehicle[entry.vehicleId].push(entry);
   });
+
+  // Sort each vehicle's entries by date
+  Object.values(byVehicle).forEach(vehicleEntries => {
+    vehicleEntries.sort((a, b) => new Date(a.date) - new Date(b.date));
+  });
+
+  const trends = {};
+  
+  // Calculate efficiency per entry within each vehicle group
+  Object.values(byVehicle).forEach(vehicleEntries => {
+    vehicleEntries.forEach((entry, i) => {
+      const date = new Date(entry.date);
+      const monthKey = `${date.toLocaleString('default', { month: 'short' })} ${date.getFullYear().toString().substr(-2)}`;
+      if (!trends[monthKey]) trends[monthKey] = { efficiency: 0, count: 0, spend: 0 };
+      
+      if (i > 0) {
+        const prev = vehicleEntries[i - 1];
+        const eff = calculateEfficiency(entry, prev);
+        if (eff > 0) {
+          trends[monthKey].efficiency += eff;
+          trends[monthKey].count += 1;
+        }
+      }
+      trends[monthKey].spend += Number(entry.cost);
+    });
+  });
+
   return Object.keys(trends).map(month => ({
     month,
     efficiency: trends[month].count > 0 ? Number((trends[month].efficiency / trends[month].count).toFixed(1)) : 0,
@@ -37,7 +61,8 @@ export const getMonthlyTrends = (entries) => {
 };
 
 /**
- * Calculates per-vehicle efficiency stats.
+ * FIX: Calculates per-vehicle efficiency stats with proper baseline
+ * Uses first odometer reading as baseline instead of assuming 0
  */
 export const getVehicleStats = (vehicles, entries) => {
   return vehicles.map(vehicle => {
@@ -47,20 +72,22 @@ export const getVehicleStats = (vehicles, entries) => {
 
     const efficiencyLogs = ve.map((e, i) => calculateEfficiency(e, ve[i - 1])).filter(v => v > 0);
     
-    // Overall Mileage calculation per user formula: 
-    // Total distance (last odo) / Total fuel used till one before last entry
+    // FIX: Use actual distance between first and last odometer, not just last odometer
+    const firstOdo = ve.length > 0 ? Number(ve[0].odometer) : 0;
     const lastOdo = ve.length > 0 ? Number(ve[ve.length - 1].odometer) : null;
+    const totalKm = lastOdo !== null ? lastOdo - firstOdo : 0;
+    
+    // Total fuel used (excluding the last entry since it covers distance beyond our tracking)
     const fuelTillPenultimate = ve.length > 1 
       ? ve.slice(0, -1).reduce((sum, e) => sum + Number(e.liters || 0), 0)
       : 0;
       
-    const avgEff = lastOdo !== null && fuelTillPenultimate > 0
-      ? Number((lastOdo / fuelTillPenultimate).toFixed(1))
+    const avgEff = totalKm > 0 && fuelTillPenultimate > 0
+      ? Number((totalKm / fuelTillPenultimate).toFixed(1))
       : null;
 
     const totalCost = ve.reduce((s, e) => s + Number(e.cost || 0), 0);
     const totalLiters = ve.reduce((s, e) => s + Number(e.liters || 0), 0);
-    const totalKm = lastOdo || 0;
     const costPerKm = totalKm > 0 ? Number((totalCost / totalKm).toFixed(2)) : null;
     const avgPricePerL = totalLiters > 0 ? Number((totalCost / totalLiters).toFixed(1)) : null;
 
@@ -73,7 +100,26 @@ export const getVehicleStats = (vehicles, entries) => {
       else if (last < prev * 0.97) trend = 'down';
     }
 
-    return { vehicle, avgEff, totalCost, totalKm, costPerKm, avgPricePerL, logsCount: ve.length, trend, fuelForMileage: fuelTillPenultimate };
+    // Fuel price trend
+    const recentPrices = ve.slice(-5).map(e => {
+      const liters = Number(e.liters);
+      const cost = Number(e.cost);
+      return liters > 0 ? cost / liters : 0;
+    }).filter(p => p > 0);
+    
+    let priceTrend = 'neutral';
+    if (recentPrices.length >= 2) {
+      const lastPrice = recentPrices[recentPrices.length - 1];
+      const prevPrice = recentPrices[recentPrices.length - 2];
+      if (lastPrice > prevPrice * 1.02) priceTrend = 'up';
+      else if (lastPrice < prevPrice * 0.98) priceTrend = 'down';
+    }
+
+    return { 
+      vehicle, avgEff, totalCost, totalKm, costPerKm, avgPricePerL, 
+      logsCount: ve.length, trend, fuelForMileage: fuelTillPenultimate,
+      priceTrend, lastOdometer: lastOdo
+    };
   });
 };
 
@@ -142,4 +188,20 @@ export const checkAlerts = (vehicles, entries) => {
     }
   });
   return alerts;
+};
+
+/**
+ * NEW: Get fuel price history for trend tracking
+ */
+export const getFuelPriceTrends = (entries) => {
+  const sorted = [...entries].sort((a, b) => new Date(a.date) - new Date(b.date));
+  return sorted.map(e => {
+    const liters = Number(e.liters);
+    const cost = Number(e.cost);
+    return {
+      date: e.date,
+      vehicleId: e.vehicleId,
+      pricePerLiter: liters > 0 ? Number((cost / liters).toFixed(2)) : 0,
+    };
+  }).filter(p => p.pricePerLiter > 0);
 };

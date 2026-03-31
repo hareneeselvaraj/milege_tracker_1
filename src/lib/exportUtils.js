@@ -63,7 +63,6 @@ export const exportFuelPDF = (entries, vehicles, filterLabel = 'All Units') => {
       doc.text('Page ' + i + ' of ' + pageCount + '  |  UltraLog Mileage Tracker', 14, doc.internal.pageSize.height - 8);
     }
 
-    // Use jsPDF's native save — most reliable method
     doc.save('UltraLog_Fuel_Report_' + new Date().toISOString().split('T')[0] + '.pdf');
   } catch (err) {
     console.error('PDF Export Error:', err);
@@ -124,6 +123,95 @@ export const exportTripPDF = (trips, vehicles) => {
 };
 
 /**
+ * NEW: Exports service log data as a PDF.
+ */
+export const exportServicePDF = (services, vehicles) => {
+  try {
+    const doc = new jsPDF();
+    const today = new Date().toLocaleDateString('en-GB');
+
+    doc.setFillColor(30, 27, 75);
+    doc.rect(0, 0, 210, 40, 'F');
+    doc.setFontSize(22);
+    doc.setTextColor(167, 139, 250);
+    doc.setFont('helvetica', 'bold');
+    doc.text('UltraLog', 14, 18);
+    doc.setFontSize(10);
+    doc.setTextColor(200, 200, 220);
+    doc.setFont('helvetica', 'normal');
+    doc.text('Service History Report', 14, 26);
+    doc.text('Generated: ' + today, 14, 33);
+
+    const totalCost = services.reduce((s, svc) => s + Number(svc.cost || 0), 0);
+    doc.setFontSize(9);
+    doc.setTextColor(100, 100, 100);
+    doc.text('Total Services: ' + services.length + '  |  Total Spend: Rs.' + totalCost.toLocaleString(), 14, 48);
+
+    const headers = [['Date', 'Vehicle', 'Odometer (KM)', 'Cost (Rs.)', 'Notes']];
+    const rows = services.map(s => [
+      s.date,
+      vehicles.find(v => v.id === s.vehicleId)?.name || 'Unknown',
+      Number(s.odometer).toLocaleString(),
+      'Rs.' + Number(s.cost).toLocaleString(),
+      s.notes || '-',
+    ]);
+
+    autoTable(doc, {
+      startY: 54,
+      head: headers,
+      body: rows,
+      theme: 'grid',
+      headStyles: { fillColor: [30, 27, 75], textColor: [167, 139, 250], fontStyle: 'bold', fontSize: 9 },
+      bodyStyles: { fontSize: 8 },
+      alternateRowStyles: { fillColor: [248, 247, 255] },
+      columnStyles: { 3: { halign: 'right' } },
+    });
+
+    doc.save('UltraLog_Service_Report_' + new Date().toISOString().split('T')[0] + '.pdf');
+  } catch (err) {
+    console.error('Service PDF Export Error:', err);
+    alert('Service PDF export failed: ' + err.message);
+  }
+};
+
+/**
+ * NEW: Exports service log as CSV
+ */
+export const exportServiceCSV = (services, vehicles) => {
+  try {
+    const headers = ['Date', 'Vehicle', 'Odometer (KM)', 'Cost (INR)', 'Notes'];
+    const rows = services.map(s => [
+      s.date,
+      vehicles.find(v => v.id === s.vehicleId)?.name || 'Unknown',
+      s.odometer,
+      s.cost,
+      s.notes || '',
+    ]);
+
+    const csvContent = [headers, ...rows]
+      .map(row => row.map(cell => '"' + cell + '"').join(','))
+      .join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const filename = 'UltraLog_Service_Data_' + new Date().toISOString().split('T')[0] + '.csv';
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => {
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }, 500);
+  } catch (err) {
+    console.error('Service CSV Export Error:', err);
+    alert('Service CSV export failed: ' + err.message);
+  }
+};
+
+/**
  * Exports fuel log entries as CSV using a Blob download.
  */
 export const exportCSV = (entries, vehicles) => {
@@ -148,7 +236,6 @@ export const exportCSV = (entries, vehicles) => {
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const filename = 'UltraLog_Fuel_Data_' + new Date().toISOString().split('T')[0] + '.csv';
 
-    // Use blob URL — works when no service worker is intercepting
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -156,7 +243,6 @@ export const exportCSV = (entries, vehicles) => {
     a.style.display = 'none';
     document.body.appendChild(a);
     a.click();
-    // Delay cleanup so browser starts the download
     setTimeout(() => {
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
