@@ -5,7 +5,7 @@
 
 import { generateId } from './validators';
 
-const CURRENT_VERSION = 2;
+const CURRENT_VERSION = 3;
 
 /**
  * Migration definitions - each migration transforms from version N to N+1
@@ -40,6 +40,20 @@ const migrations = {
     }));
 
     migrated.schemaVersion = 2;
+    return migrated;
+  },
+  // Version 2 -> 3: Add financial entities and accounts
+  2: (data) => {
+    const migrated = { ...data };
+    migrated.expenses = data.expenses || [];
+    migrated.income = data.income || [];
+    migrated.budgets = data.budgets || [];
+    migrated.accounts = data.accounts || [
+      { id: 'acc_cash', name: 'Cash', type: 'Cash', balance: 0 },
+      { id: 'acc_bank', name: 'Bank Account', type: 'Bank', balance: 0 },
+      { id: 'acc_upi', name: 'UPI Wallet', type: 'Wallet', balance: 0 }
+    ];
+    migrated.schemaVersion = 3;
     return migrated;
   }
 };

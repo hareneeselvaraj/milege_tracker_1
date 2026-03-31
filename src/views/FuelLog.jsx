@@ -3,6 +3,7 @@ import EmptyState from '../components/common/EmptyState';
 import SwipeableCard from '../components/common/SwipeableCard';
 import { Fuel, Download, Trash2, Edit3, Bike, Plus } from 'lucide-react';
 import { exportFuelPDF, exportCSV } from '../lib/exportUtils';
+import { calculateEfficiency } from '../lib/analytics';
 
 const FuelLog = ({ vehicles, entries, onAddClick, onEdit, onDelete }) => {
   const [activeVehicleId, setActiveVehicleId] = useState('all');
@@ -17,29 +18,54 @@ const FuelLog = ({ vehicles, entries, onAddClick, onEdit, onDelete }) => {
     return () => el.removeEventListener('scroll', handler);
   }, []);
 
-  const filteredEntries = useMemo(() => {
-    return entries
+  const entriesWithAnalytics = useMemo(() => {
+    const byVehicle = {};
+    entries.forEach(e => {
+       if (!byVehicle[e.vehicleId]) byVehicle[e.vehicleId] = [];
+       byVehicle[e.vehicleId].push(e);
+    });
+    
+    const processed = [];
+    Object.values(byVehicle).forEach(vehicleEntries => {
+      vehicleEntries.sort((a,b) => new Date(a.date) - new Date(b.date));
+      vehicleEntries.forEach((entry, i) => {
+         const efficiency = i > 0 ? calculateEfficiency(entry, vehicleEntries[i-1]) : null;
+         processed.push({ ...entry, efficiency });
+      });
+    });
+
+    return processed
       .filter(entry => activeVehicleId === 'all' || entry.vehicleId === activeVehicleId)
-      .slice()
-      .reverse();
+      .sort((a, b) => new Date(b.date) - new Date(a.date));
   }, [entries, activeVehicleId]);
 
   const groupedEntries = useMemo(() => {
     const groups = {};
-    filteredEntries.forEach(entry => {
+    entriesWithAnalytics.forEach(entry => {
       const date = new Date(entry.date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' });
       if (!groups[date]) groups[date] = [];
       groups[date].push(entry);
     });
     return groups;
-  }, [filteredEntries]);
+  }, [entriesWithAnalytics]);
 
   const stats = useMemo(() => {
-    const totalCost = filteredEntries.reduce((sum, e) => sum + Number(e.cost), 0);
-    const totalLiters = filteredEntries.reduce((sum, e) => sum + Number(e.liters), 0);
+    const totalCost = entriesWithAnalytics.reduce((sum, e) => sum + Number(e.cost), 0);
+    const totalLiters = entriesWithAnalytics.reduce((sum, e) => sum + Number(e.liters), 0);
     const avgPPL = totalLiters > 0 ? (totalCost / totalLiters).toFixed(1) : '--';
-    return { cost: totalCost.toLocaleString(), liters: totalLiters.toFixed(1), count: filteredEntries.length, avgPPL };
-  }, [filteredEntries]);
+    
+    let totalEff = 0;
+    let validCount = 0;
+    entriesWithAnalytics.forEach(e => {
+       if (e.efficiency > 0) {
+         totalEff += e.efficiency;
+         validCount++;
+       }
+    });
+    const avgKML = validCount > 0 ? (totalEff / validCount).toFixed(1) : '--';
+    
+    return { cost: totalCost.toLocaleString(), liters: totalLiters.toFixed(1), count: entriesWithAnalytics.length, avgPPL, avgKML };
+  }, [entriesWithAnalytics]);
 
   const filterLabel = activeVehicleId === 'all'
     ? 'All Units'
@@ -85,22 +111,22 @@ const FuelLog = ({ vehicles, entries, onAddClick, onEdit, onDelete }) => {
 
           {/* SUMMARY */}
           {stats.count > 0 && (
-            <div className="grid grid-cols-4 gap-2">
-              <div className="summary-card col-span-1">
-                <div className="text-xs font-black opacity-40 tracking-widest mb-1 text-primary">Liters</div>
-                <div className="text-sm font-black text-primary">{stats.liters}</div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="summary-card flex justify-between items-center">
+                <div className="text-xs font-black opacity-40 tracking-widest text-primary uppercase">Liters</div>
+                <div className="text-lg font-black text-primary tracking-tighter">{stats.liters} L</div>
               </div>
-              <div className="summary-card col-span-1">
-                <div className="text-xs font-black opacity-40 tracking-widest mb-1 text-primary">Spend</div>
-                <div className="text-sm font-black text-danger">₹{stats.cost}</div>
+              <div className="summary-card flex justify-between items-center">
+                <div className="text-xs font-black opacity-40 tracking-widest text-primary uppercase">Spend</div>
+                <div className="text-lg font-black text-danger tracking-tighter">₹{stats.cost}</div>
               </div>
-              <div className="summary-card col-span-1">
-                <div className="text-xs font-black opacity-40 tracking-widest mb-1 text-primary">₹/Liter</div>
-                <div className="text-sm font-black text-warning">{stats.avgPPL}</div>
+              <div className="summary-card border border-success-border bg-success-soft flex justify-between items-center">
+                <div className="text-xs font-black text-success tracking-widest uppercase">Avg KM/L</div>
+                <div className="text-xl font-black text-success tracking-tighter">{stats.avgKML}</div>
               </div>
-              <div className="summary-card col-span-1 bg-success-soft">
-                <div className="text-xs font-black text-success tracking-widest mb-1">Logs</div>
-                <div className="text-sm font-black text-success">{stats.count}</div>
+              <div className="summary-card flex justify-between items-center">
+                <div className="text-xs font-black opacity-40 tracking-widest text-primary uppercase">Logs</div>
+                <div className="text-lg font-black text-primary tracking-tighter">{stats.count}</div>
               </div>
             </div>
           )}
@@ -130,10 +156,15 @@ const FuelLog = ({ vehicles, entries, onAddClick, onEdit, onDelete }) => {
                               <h3 className="font-black text-sm tracking-tight text-primary">{vehicle?.name || 'Unknown'}</h3>
                               <span className="font-black text-sm text-primary">₹{Number(entry.cost).toLocaleString()}</span>
                             </div>
-                            <div className="flex justify-between items-center mt-1">
-                              <span className="text-xs font-bold text-secondary tracking-widest">
-                                {entry.odometer} KM • {entry.liters} L {ppl ? `• ₹${ppl}/L` : ''}
+                            <div className="flex justify-between items-center mt-2">
+                              <span className="text-xs font-bold text-secondary tracking-widest uppercase">
+                                {entry.odometer} KM • {entry.liters} L
                               </span>
+                              {entry.efficiency > 0 && (
+                                <span className="text-[10px] font-black tracking-widest text-success bg-success-soft px-2 py-0.5 rounded-full border border-success-border">
+                                  {entry.efficiency} KM/L
+                                </span>
+                              )}
                             </div>
                             {entry.photo && (
                               <div style={{ marginTop: 6 }}>

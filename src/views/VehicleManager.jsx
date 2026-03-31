@@ -2,7 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import GlassCard from '../components/common/GlassCard';
 import { Car, Trash2, Bike, ShieldCheck, Plus, Pencil, Wrench, AlertTriangle, CheckCircle, IndianRupee, ChevronDown, Fuel } from 'lucide-react';
 
-const VehicleManager = ({ vehicles, entries, services, onDeleteVehicle, onAddClick, onEdit, onMarkServiced }) => {
+const VehicleManager = ({ vehicles, entries, services, trips, onDeleteVehicle, onAddClick, onEdit, onMarkServiced }) => {
   const [activeTab, setActiveTab] = useState('fleet');
   const [expandedVehicle, setExpandedVehicle] = useState(null);
   const [scrolled, setScrolled] = useState(false);
@@ -31,11 +31,22 @@ const VehicleManager = ({ vehicles, entries, services, onDeleteVehicle, onAddCli
   };
 
   const getTotalKm = (vehicle) => {
-    const ve = entries
-      .filter(e => e.vehicleId === vehicle.id)
-      .sort((a, b) => new Date(a.date) - new Date(b.date));
-    if (ve.length === 0) return null;
-    return Number(ve[ve.length - 1].odometer);
+    let maxOdo = 0;
+    
+    // Check fuel entries
+    const ve = entries.filter(e => e.vehicleId === vehicle.id);
+    ve.forEach(e => { if (Number(e.odometer) > maxOdo) maxOdo = Number(e.odometer); });
+    
+    // Check services
+    const vs = (services || []).filter(s => s.vehicleId === vehicle.id);
+    vs.forEach(s => { if (Number(s.odometer) > maxOdo) maxOdo = Number(s.odometer); });
+    
+    // Check trips
+    const vt = (trips || []).filter(t => t.vehicleId === vehicle.id);
+    vt.forEach(t => { if (Number(t.endOdometer) > maxOdo) maxOdo = Number(t.endOdometer); });
+    
+    if (maxOdo === 0) return null;
+    return maxOdo;
   };
 
   const getOwnershipData = (vehicle) => {
@@ -166,7 +177,7 @@ const VehicleManager = ({ vehicles, entries, services, onDeleteVehicle, onAddCli
                       <div className="flex flex-col mt-4 border-t border-theme pt-5">
                         <div className="grid grid-cols-2 gap-3 mb-3">
                           <div className="bg-secondary border-theme rounded-[20px] p-4 flex flex-col justify-between shadow-sm relative overflow-hidden" style={{ minHeight: '90px' }}>
-                             <div className="absolute -right-4 -bottom-4 opacity-[0.03]"><Car size={80} /></div>
+                             <div className="absolute -right-4 -bottom-4" style={{ opacity: 0.05 }}><Car size={80} /></div>
                              <div className="flex items-center gap-2 mb-2 relative z-10">
                                <div className="w-6 h-6 rounded-full bg-accent-soft text-accent flex items-center justify-center shrink-0">
                                  <IndianRupee size={12} strokeWidth={3} />
@@ -177,7 +188,7 @@ const VehicleManager = ({ vehicles, entries, services, onDeleteVehicle, onAddCli
                           </div>
                           
                           <div className="bg-secondary border-theme rounded-[20px] p-4 flex flex-col justify-between shadow-sm relative overflow-hidden" style={{ minHeight: '90px' }}>
-                             <div className="absolute -right-4 -bottom-4 opacity-[0.03]"><Wrench size={80} /></div>
+                             <div className="absolute -right-4 -bottom-4" style={{ opacity: 0.05 }}><Wrench size={80} /></div>
                              <div className="flex items-center gap-2 mb-2 relative z-10">
                                <div className="w-6 h-6 rounded-full bg-blue-soft text-blue-soft flex items-center justify-center shrink-0">
                                  <Wrench size={12} strokeWidth={3} />
@@ -188,7 +199,7 @@ const VehicleManager = ({ vehicles, entries, services, onDeleteVehicle, onAddCli
                           </div>
                           
                           <div className="bg-secondary border-theme rounded-[20px] p-4 flex flex-col justify-between col-span-2 shadow-sm relative overflow-hidden" style={{ minHeight: '80px' }}>
-                             <div className="absolute -right-2 -bottom-6 opacity-[0.03]"><Fuel size={120} /></div>
+                             <div className="absolute -right-2 -bottom-6" style={{ opacity: 0.05 }}><Fuel size={120} /></div>
                              <div className="flex items-center justify-between relative z-10 w-full">
                                 <div className="flex items-center gap-3">
                                   <div className="w-8 h-8 rounded-full bg-danger-soft text-danger flex items-center justify-center shrink-0">

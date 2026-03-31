@@ -11,8 +11,9 @@ import ErrorBoundary from './components/common/ErrorBoundary';
 import ServiceLog from './views/ServiceLog';
 import NotificationCenter from './components/common/NotificationCenter';
 import PhotoCapture from './components/common/PhotoCapture';
+import Select from './components/common/Select';
 import { initClient, getFile, createFile, updateFile } from './lib/gdrive';
-import { generateId, validateFuelEntry, validateTrip, validateVehicle, validateService, ensureIds, checkDataConsistency } from './lib/validators';
+import { generateId, validateFuelEntry, validateTrip, validateVehicle, validateService, validateExpense, validateBudget, ensureIds, checkDataConsistency } from './lib/validators';
 import { migrateData } from './lib/migrations';
 import { checkAlerts } from './lib/analytics';
 import { Car, RefreshCcw, LogOut, ChevronRight, Bike, Fuel, Plus, Route, X, AlertTriangle, Sun, Moon, Zap, Wifi, WifiOff, Bell } from 'lucide-react';
@@ -23,7 +24,16 @@ const App = () => {
   const [activeView, setActiveView] = useState('dashboard');
   const [user, setUser] = useState(null);
   const [clientId] = useState(localStorage.getItem('gdrive_client_id') || '936797203666-q5rqnu3g44rsm01fbsd9d344c4em98kp.apps.googleusercontent.com');
-  const [data, setData] = useState({ vehicles: [], entries: [], trips: [], services: [], schemaVersion: 2 });
+  const [data, setData] = useState({ 
+    vehicles: [], entries: [], trips: [], services: [], 
+    expenses: [], income: [], budgets: [], 
+    accounts: [
+      { id: 'acc_cash', name: 'Cash', type: 'Cash', balance: 0 },
+      { id: 'acc_bank', name: 'Bank Account', type: 'Bank', balance: 0 },
+      { id: 'acc_upi', name: 'UPI Wallet', type: 'Wallet', balance: 0 }
+    ],
+    schemaVersion: 3 
+  });
   const [fileId, setFileId] = useState(null);
   const [loading, setLoading] = useState(false);
   const [syncStatus, setSyncStatus] = useState('idle'); // idle, syncing, synced, error
@@ -52,7 +62,7 @@ const App = () => {
     if (theme === 'auto') {
       const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
       document.documentElement.setAttribute('data-theme', isDark ? 'dark' : 'light');
-      
+
       const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
       const handler = (e) => document.documentElement.setAttribute('data-theme', e.matches ? 'dark' : 'light');
       mediaQuery.addEventListener('change', handler);
@@ -79,6 +89,8 @@ const App = () => {
   const [fuelForm, setFuelForm] = useState({ vehicleId: '', odometer: '', liters: '', cost: '', date: new Date().toISOString().split('T')[0], photo: null });
   const [tripForm, setTripForm] = useState({ vehicleId: '', startOdometer: '', endOdometer: '', purpose: 'Commute', notes: '', date: new Date().toISOString().split('T')[0] });
   const [serviceForm, setServiceForm] = useState({ vehicleId: '', odometer: '', cost: '', date: new Date().toISOString().split('T')[0], notes: '', photo: null });
+  const [expenseForm, setExpenseForm] = useState({ accountId: '', amount: '', category: 'Other', date: new Date().toISOString().split('T')[0], notes: '', photo: null, splitWith: '' });
+  const [budgetForm, setBudgetForm] = useState({ category: 'Other', limit: '', month: new Date().toISOString().substring(0, 7) });
 
   useEffect(() => {
     if (clientId) {
@@ -119,7 +131,7 @@ const App = () => {
         }
       } else {
         console.log('Using local data fallback.');
-        loaded = JSON.parse(localStorage.getItem('mileage_data_local')) || 
+        loaded = JSON.parse(localStorage.getItem('mileage_data_local')) ||
           { vehicles: [], entries: [], trips: [], services: [], schemaVersion: 2 };
       }
 
@@ -245,7 +257,7 @@ const App = () => {
     const ve = data.entries.filter(e => e.vehicleId === vehicleId).sort((a, b) => new Date(a.date) - new Date(b.date));
     const lastOdo = ve.length > 0 ? ve[ve.length - 1].odometer : '0';
     const today = new Date().toISOString().split('T')[0];
-    
+
     const newService = {
       id: generateId(),
       vehicleId,
@@ -468,97 +480,102 @@ const App = () => {
 
       {/* Views — each view owns its own scroll via view-container/view-content */}
       <div key={activeView} className="page-transition" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
-          {activeView === 'dashboard' && (
-            <ErrorBoundary name="Dashboard">
-              <Dashboard
-                vehicles={data.vehicles}
-                entries={data.entries}
-                trips={trips}
-                user={user}
-                isSynced={!!fileId}
-                onAddClick={() => { haptic(); openModal('fuel'); }}
-                onMarkServiced={handleMarkServiced}
-                onSettingsClick={() => setActiveView('settings')}
-                onViewChange={setActiveView}
-                onNotificationsClick={() => setNotificationsOpen(true)}
-              />
-            </ErrorBoundary>
-          )}
-          {activeView === 'fuel' && (
-            <ErrorBoundary name="Fuel Log">
-              <FuelLog
-                vehicles={data.vehicles}
-                entries={data.entries}
-                onAddClick={() => { haptic(); openModal('fuel'); }}
-                onEdit={(entry) => openModal('fuel', 'edit', entry)}
-                onDelete={(entryId) => { haptic([15]); deleteEntry(entryId); }}
-              />
-            </ErrorBoundary>
-          )}
-          {activeView === 'trips' && (
-            <ErrorBoundary name="Trip Log">
-              <TripLog
-                vehicles={data.vehicles}
-                trips={trips}
-                onAddClick={() => { haptic(); openModal('trip'); }}
-                onEdit={(trip) => openModal('trip', 'edit', trip)}
-                onDelete={(tripId) => { haptic([15]); deleteTrip(tripId); }}
-              />
-            </ErrorBoundary>
-          )}
-          {activeView === 'vehicles' && (
-            <ErrorBoundary name="Garage">
-              <VehicleManager
-                vehicles={data.vehicles}
-                entries={data.entries}
-                services={services}
-                onAddClick={() => { haptic(); openModal('vehicle'); }}
-                onEdit={(v) => openModal('vehicle', 'edit', v)}
-                onMarkServiced={handleMarkServiced}
-                onDeleteVehicle={(id) => {
-                  const hasLogs = data.entries.some(e => e.vehicleId === id);
-                  if (hasLogs) { showToast('Vehicle has fuel logs. Cannot delete.', 'error'); return; }
-                  showConfirm('Permanently decommission this vehicle?', () => {
-                    haptic([15]);
-                    saveData({ ...data, vehicles: data.vehicles.filter(v => v.id !== id) });
-                    showToast('Vehicle removed', 'error');
-                  });
-                }}
-              />
-            </ErrorBoundary>
-          )}
-          {activeView === 'services' && (
-            <ErrorBoundary name="Service Log">
-              <ServiceLog
-                vehicles={data.vehicles}
-                services={services}
-                onAddClick={() => { haptic(); openModal('service'); }}
-                onEdit={(service) => openModal('service', 'edit', service)}
-                onDelete={(serviceId) => { haptic([15]); deleteService(serviceId); }}
-              />
-            </ErrorBoundary>
-          )}
-          {activeView === 'settings' && (
-            <ErrorBoundary name="Settings">
-              <Settings
-                user={user}
-                data={data}
-                fileId={fileId}
-                theme={theme}
-                setTheme={setTheme}
-                onLogout={handleLogout}
-                onBack={() => setActiveView('dashboard')}
-              />
-            </ErrorBoundary>
-          )}
-        </div>
+        {activeView === 'dashboard' && (
+          <ErrorBoundary name="Dashboard">
+            <Dashboard
+              vehicles={data.vehicles}
+              entries={data.entries}
+              trips={trips}
+              user={user}
+              isSynced={!!fileId}
+              onAddClick={() => { haptic(); openModal('fuel'); }}
+              onMarkServiced={handleMarkServiced}
+              onSettingsClick={() => setActiveView('settings')}
+              onViewChange={setActiveView}
+              onNotificationsClick={() => setNotificationsOpen(true)}
+              theme={theme}
+              expenses={data.expenses}
+              income={data.income}
+              budgets={data.budgets}
+            />
+          </ErrorBoundary>
+        )}
+        {activeView === 'fuel' && (
+          <ErrorBoundary name="Fuel Log">
+            <FuelLog
+              vehicles={data.vehicles}
+              entries={data.entries}
+              onAddClick={() => { haptic(); openModal('fuel'); }}
+              onEdit={(entry) => openModal('fuel', 'edit', entry)}
+              onDelete={(entryId) => { haptic([15]); deleteEntry(entryId); }}
+            />
+          </ErrorBoundary>
+        )}
+        {activeView === 'trips' && (
+          <ErrorBoundary name="Trip Log">
+            <TripLog
+              vehicles={data.vehicles}
+              trips={trips}
+              onAddClick={() => { haptic(); openModal('trip'); }}
+              onEdit={(trip) => openModal('trip', 'edit', trip)}
+              onDelete={(tripId) => { haptic([15]); deleteTrip(tripId); }}
+            />
+          </ErrorBoundary>
+        )}
+        {activeView === 'vehicles' && (
+          <ErrorBoundary name="Garage">
+            <VehicleManager
+              vehicles={data.vehicles}
+              entries={data.entries}
+              services={services}
+              trips={trips}
+              onAddClick={() => { haptic(); openModal('vehicle'); }}
+              onEdit={(v) => openModal('vehicle', 'edit', v)}
+              onMarkServiced={handleMarkServiced}
+              onDeleteVehicle={(id) => {
+                const hasLogs = data.entries.some(e => e.vehicleId === id);
+                if (hasLogs) { showToast('Vehicle has fuel logs. Cannot delete.', 'error'); return; }
+                showConfirm('Permanently decommission this vehicle?', () => {
+                  haptic([15]);
+                  saveData({ ...data, vehicles: data.vehicles.filter(v => v.id !== id) });
+                  showToast('Vehicle removed', 'error');
+                });
+              }}
+            />
+          </ErrorBoundary>
+        )}
+        {activeView === 'services' && (
+          <ErrorBoundary name="Service Log">
+            <ServiceLog
+              vehicles={data.vehicles}
+              services={services}
+              onAddClick={() => { haptic(); openModal('service'); }}
+              onEdit={(service) => openModal('service', 'edit', service)}
+              onDelete={(serviceId) => { haptic([15]); deleteService(serviceId); }}
+            />
+          </ErrorBoundary>
+        )}
+        {activeView === 'settings' && (
+          <ErrorBoundary name="Settings">
+            <Settings
+              user={user}
+              data={data}
+              fileId={fileId}
+              theme={theme}
+              setTheme={setTheme}
+              onLogout={handleLogout}
+              onBack={() => setActiveView('dashboard')}
+            />
+          </ErrorBoundary>
+        )}
+      </div>
 
-      <BottomNav 
-        activeView={activeView} 
-        setActiveView={(view) => { haptic([5]); setActiveView(view); }} 
+      <BottomNav
+        activeView={activeView}
+        setActiveView={(view) => { haptic([5]); setActiveView(view); }}
         badges={{
           services: (() => {
-            try { return checkAlerts(data.vehicles, data.entries).length; } catch(e) { return 0; }
+            try { return checkAlerts(data.vehicles, data.entries).length; } catch (e) { return 0; }
           })()
         }}
       />
@@ -629,11 +646,17 @@ const App = () => {
         {modal.type === 'fuel' && (
           <form onSubmit={submitFuel} className="flex flex-col gap-6">
             <div className="flex flex-col gap-2">
-              <label className="label-small">Machine</label>
-              <select className="input-glass" value={fuelForm.vehicleId} onChange={e => setFuelForm({ ...fuelForm, vehicleId: e.target.value })} required>
-                <option value="" disabled>Select Vehicle</option>
-                {data.vehicles.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
-              </select>
+              <Select 
+                label="Select Vehicle"
+                value={fuelForm.vehicleId} 
+                onChange={e => setFuelForm({ ...fuelForm, vehicleId: e.target.value })}
+                options={data.vehicles.map(v => ({ 
+                  value: v.id, 
+                  label: v.name, 
+                  icon: v.type === 'Bike' ? Bike : Car 
+                }))}
+                icon={Car}
+              />
               <FieldError field="vehicleId" />
             </div>
             <div className="flex flex-col gap-2">
@@ -663,10 +686,10 @@ const App = () => {
                 ₹{(Number(fuelForm.cost) / Number(fuelForm.liters)).toFixed(2)} per liter
               </div>
             )}
-            <PhotoCapture 
-              value={fuelForm.photo} 
-              onChange={(photo) => setFuelForm({ ...fuelForm, photo })} 
-              label="Receipt Photo (optional)" 
+            <PhotoCapture
+              value={fuelForm.photo}
+              onChange={(photo) => setFuelForm({ ...fuelForm, photo })}
+              label="Receipt Photo (optional)"
             />
             <button type="submit" className="premium-btn w-full mt-2 text-bg-primary" style={{ color: 'var(--bg-primary)' }}>
               {modal.mode === 'edit' ? 'CONFIRM CHANGES' : 'SAVE ENTRY'}
@@ -677,11 +700,17 @@ const App = () => {
         {modal.type === 'trip' && (
           <form onSubmit={submitTrip} className="flex flex-col gap-6">
             <div className="flex flex-col gap-2">
-              <label className="label-small">Vehicle</label>
-              <select className="input-glass" value={tripForm.vehicleId} onChange={e => setTripForm({ ...tripForm, vehicleId: e.target.value })} required>
-                <option value="" disabled>Select Vehicle</option>
-                {data.vehicles.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
-              </select>
+              <Select 
+                label="Select Vehicle"
+                value={tripForm.vehicleId} 
+                onChange={e => setTripForm({ ...tripForm, vehicleId: e.target.value })}
+                options={data.vehicles.map(v => ({ 
+                  value: v.id, 
+                  label: v.name, 
+                  icon: v.type === 'Bike' ? Bike : Car 
+                }))}
+                icon={Car}
+              />
               <FieldError field="vehicleId" />
             </div>
             <div className="grid grid-cols-2 gap-4">
@@ -702,10 +731,13 @@ const App = () => {
               </div>
             )}
             <div className="flex flex-col gap-2">
-              <label className="label-small">Purpose</label>
-              <select className="input-glass" value={tripForm.purpose} onChange={e => setTripForm({ ...tripForm, purpose: e.target.value })}>
-                {PURPOSES.map(p => <option key={p} value={p}>{p}</option>)}
-              </select>
+              <Select 
+                label="Trip Purpose"
+                value={tripForm.purpose} 
+                onChange={e => setTripForm({ ...tripForm, purpose: e.target.value })}
+                options={PURPOSES.map(p => ({ value: p, label: p }))}
+                icon={Route}
+              />
             </div>
             <div className="flex flex-col gap-2">
               <label className="label-small">Date</label>
@@ -725,11 +757,17 @@ const App = () => {
         {modal.type === 'service' && (
           <form onSubmit={submitService} className="flex flex-col gap-6">
             <div className="flex flex-col gap-2">
-              <label className="label-small">Machine</label>
-              <select className="input-glass" value={serviceForm.vehicleId} onChange={e => setServiceForm({ ...serviceForm, vehicleId: e.target.value })} required>
-                <option value="" disabled>Select Vehicle</option>
-                {data.vehicles.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
-              </select>
+              <Select 
+                label="Select Vehicle"
+                value={serviceForm.vehicleId} 
+                onChange={e => setServiceForm({ ...serviceForm, vehicleId: e.target.value })}
+                options={data.vehicles.map(v => ({ 
+                  value: v.id, 
+                  label: v.name, 
+                  icon: v.type === 'Bike' ? Bike : Car 
+                }))}
+                icon={Car}
+              />
               <FieldError field="vehicleId" />
             </div>
             <div className="flex flex-col gap-2">
@@ -751,10 +789,10 @@ const App = () => {
               <label className="label-small">Notes (Maintenance Details)</label>
               <input className="input-glass" placeholder="e.g. Oil change, brake pads..." value={serviceForm.notes} onChange={e => setServiceForm({ ...serviceForm, notes: e.target.value })} />
             </div>
-            <PhotoCapture 
-              value={serviceForm.photo} 
-              onChange={(photo) => setServiceForm({ ...serviceForm, photo })} 
-              label="Service Receipt (optional)" 
+            <PhotoCapture
+              value={serviceForm.photo}
+              onChange={(photo) => setServiceForm({ ...serviceForm, photo })}
+              label="Service Receipt (optional)"
             />
             <button type="submit" className="premium-btn w-full mt-2" style={{ color: 'var(--bg-primary)' }}>
               {modal.mode === 'edit' ? 'UPDATE SERVICE' : 'LOG SERVICE'}
@@ -780,10 +818,13 @@ const App = () => {
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div className="flex flex-col gap-2">
-                <label className="label-small h-[28px] flex items-end">Propulsion</label>
-                <select className="input-glass" value={vehicleForm.fuelType} onChange={e => setVehicleForm({ ...vehicleForm, fuelType: e.target.value })}>
-                  <option>Petrol</option><option>Diesel</option><option>Electric</option><option>CNG</option>
-                </select>
+                <Select 
+                  label="Fuel Type"
+                  value={vehicleForm.fuelType} 
+                  onChange={e => setVehicleForm({ ...vehicleForm, fuelType: e.target.value })}
+                  options={['Petrol', 'Diesel', 'Electric', 'CNG', 'LPG'].map(f => ({ value: f, label: f }))}
+                  icon={Fuel}
+                />
               </div>
               <div className="flex flex-col gap-2">
                 <label className="label-small h-[28px] flex items-end">Service Interval</label>

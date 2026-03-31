@@ -5,8 +5,21 @@ import ReminderBanner from '../components/common/ReminderBanner';
 import { Fuel, TrendingUp, TrendingDown, Minus, AlertTriangle, Activity, Plus, ShieldCheck, Zap, Gauge, Car, Bike, Route, Settings, Wrench, Bell } from 'lucide-react';
 import { checkAlerts, getMonthlyTrends, calculateEfficiency, getVehicleStats, getTripStats } from '../lib/analytics';
 
-const Dashboard = ({ vehicles, entries, trips, user, isSynced, onAddClick, onMarkServiced, onSettingsClick, onViewChange, onNotificationsClick }) => {
+const Dashboard = ({ vehicles, entries, trips, user, isSynced, onAddClick, onMarkServiced, onSettingsClick, onViewChange, onNotificationsClick, theme, expenses = [], income = [], budgets = [] }) => {
   const alerts = checkAlerts(vehicles, entries);
+  const isLight = theme === 'light';
+
+  const headerColor = isLight ? 'var(--text-primary)' : 'white';
+  const headerSoftColor = isLight ? 'var(--text-secondary)' : 'rgba(255,255,255,0.7)';
+  const iconBg = isLight ? 'rgba(0, 0, 0, 0.05)' : 'rgba(255, 255, 255, 0.15)';
+  const iconBorder = isLight ? '1px solid rgba(0, 0, 0, 0.08)' : '1px solid rgba(255, 255, 255, 0.2)';
+
+  // Financial calculations
+  const currentMonth = new Date().toISOString().substring(0, 7);
+  const monthlyExpenses = expenses.filter(e => e.date.startsWith(currentMonth)).reduce((sum, e) => sum + Number(e.amount), 0);
+  const monthlyBudget = budgets.filter(b => b.month === currentMonth).reduce((sum, b) => sum + Number(b.limit), 0);
+  const budgetUtilization = monthlyBudget > 0 ? (monthlyExpenses / monthlyBudget) * 100 : 0;
+  const budgetStatus = budgetUtilization > 90 ? 'danger' : budgetUtilization > 75 ? 'warning' : 'success';
   const trends = getMonthlyTrends(entries);
   const vehicleStats = useMemo(() => getVehicleStats(vehicles, entries), [vehicles, entries]);
   const tripStats = useMemo(() => getTripStats(trips), [trips]);
@@ -45,8 +58,8 @@ const Dashboard = ({ vehicles, entries, trips, user, isSynced, onAddClick, onMar
   return (
     <div className="view-container" style={{ position: 'relative' }}>
       {/* Layer 1: Fixed gradient background — parallax */}
-      <div 
-        className="dashboard-gradient" 
+      <div
+        className="dashboard-gradient"
         style={{
           opacity: Math.max(0, 1 - scrollY / 200),
           transform: `translateY(${-scrollY * 0.3}px)`
@@ -68,31 +81,31 @@ const Dashboard = ({ vehicles, entries, trips, user, isSynced, onAddClick, onMar
             {profileImg ? (
               <img src={profileImg} alt="User" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
             ) : (
-              <div className="flex items-center justify-center w-full h-full" style={{ color: 'white', fontSize: 'var(--type-footnote)', fontWeight: 900 }}>
+              <div className="flex items-center justify-center w-full h-full" style={{ color: headerColor, fontSize: 'var(--type-footnote)', fontWeight: 900 }}>
                 {profileInitials}
               </div>
             )}
           </div>
           <div>
-            <div style={{ color: 'rgba(255,255,255,0.5)', fontSize: 'var(--type-caption)', fontWeight: 900, letterSpacing: '0.2em', textTransform: 'uppercase' }}>
+            <div style={{ color: headerSoftColor, fontSize: 'var(--type-caption)', fontWeight: 900, letterSpacing: '0.2em', textTransform: 'uppercase' }}>
               Dashboard
             </div>
-            <h1 style={{ color: 'white', fontSize: 'var(--type-title2)', fontWeight: 900, letterSpacing: '-0.5px', textShadow: '0 2px 8px rgba(0,0,0,0.2)' }}>
+            <h1 style={{ color: headerColor, fontSize: 'var(--type-title2)', fontWeight: 900, letterSpacing: '-0.5px' }}>
               {profileName}
             </h1>
           </div>
         </div>
         <div className="flex items-center gap-2">
           {/* Notification bell */}
-          <button 
+          <button
             onClick={onNotificationsClick}
             style={{
               width: 44, height: 44, borderRadius: 'var(--radius-md)',
-              background: 'rgba(255,255,255,0.15)',
+              background: iconBg,
               backdropFilter: 'blur(20px)',
-              border: '1px solid rgba(255,255,255,0.2)',
+              border: iconBorder,
               display: 'flex', alignItems: 'center', justifyContent: 'center',
-              color: 'white', cursor: 'pointer',
+              color: headerColor, cursor: 'pointer',
               position: 'relative',
             }}
           >
@@ -102,19 +115,19 @@ const Dashboard = ({ vehicles, entries, trips, user, isSynced, onAddClick, onMar
                 position: 'absolute', top: 6, right: 6,
                 width: 8, height: 8, borderRadius: '50%',
                 background: 'var(--danger)',
-                border: '2px solid rgba(255,255,255,0.3)',
+                border: `2px solid ${isLight ? 'white' : 'rgba(255,255,255,0.3)'}`,
               }} />
             )}
           </button>
-          <button 
-            onClick={onSettingsClick} 
+          <button
+            onClick={onSettingsClick}
             style={{
               width: 44, height: 44, borderRadius: 'var(--radius-md)',
-              background: 'rgba(255,255,255,0.15)',
+              background: iconBg,
               backdropFilter: 'blur(20px)',
-              border: '1px solid rgba(255,255,255,0.2)',
+              border: iconBorder,
               display: 'flex', alignItems: 'center', justifyContent: 'center',
-              color: 'white', cursor: 'pointer',
+              color: headerColor, cursor: 'pointer',
             }}
           >
             <Settings size={20} />
@@ -123,8 +136,8 @@ const Dashboard = ({ vehicles, entries, trips, user, isSynced, onAddClick, onMar
       </div>
 
       {/* Layer 3: Scrollable content */}
-      <div 
-        className="view-content" 
+      <div
+        className="view-content"
         ref={contentRef}
         onScroll={(e) => setScrollY(e.target.scrollTop)}
         style={{ paddingTop: 'var(--space-lg)' }}
@@ -136,7 +149,7 @@ const Dashboard = ({ vehicles, entries, trips, user, isSynced, onAddClick, onMar
           )}
 
           {/* HERO CARD */}
-          <div className="glass-card relative overflow-hidden" style={{ 
+          <div className="glass-card relative overflow-hidden" style={{
             borderRadius: 'var(--radius-3xl)',
             padding: 'var(--space-4xl) var(--space-2xl)',
             background: 'var(--bg-card)',
@@ -144,7 +157,7 @@ const Dashboard = ({ vehicles, entries, trips, user, isSynced, onAddClick, onMar
           }}>
             <div style={{ position: 'absolute', top: -20, right: -20, width: 120, height: 120, borderRadius: '100%', background: 'var(--accent-soft)', filter: 'blur(40px)', pointerEvents: 'none' }} />
             <div className="relative" style={{ zIndex: 1 }}>
-              <div style={{ 
+              <div style={{
                 width: 72, height: 72, borderRadius: 'var(--radius-2xl)',
                 background: 'var(--accent-soft)', border: '1px solid var(--border)',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -207,23 +220,23 @@ const Dashboard = ({ vehicles, entries, trips, user, isSynced, onAddClick, onMar
           </div>
 
           {/* STAT GRID */}
-          <div className="stat-grid">
+          <div className="stat-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 'var(--space-md)', padding: '0 var(--space-xs)' }}>
             {[
               { icon: TrendingUp, iconColor: 'var(--success)', label: 'KM/L Avg', value: avgEfficiency, badge: 'Opti', badgeColor: 'var(--success)' },
               { icon: Fuel, iconColor: 'var(--danger)', label: 'Fuel Logs', value: entries.length, badge: 'Data', badgeColor: 'var(--danger)' },
               { icon: Route, iconColor: '#60A5FA', label: `${totalTripsKm.toLocaleString()} KM`, value: trips.length, badge: 'Trips', badgeColor: '#60A5FA' },
               { icon: Car, iconColor: 'var(--accent)', label: 'Machines', value: vehicles.length, badge: 'Fleet', badgeColor: 'var(--accent)' },
             ].map(({ icon: Icon, iconColor, label, value, badge, badgeColor }) => (
-              <GlassCard key={label} className="mini-stat-card" style={{ padding: 'var(--space-xl)' }}>
+              <GlassCard key={label} style={{ padding: 'var(--space-md)', display: 'flex', flexDirection: 'column', gap: 'var(--space-sm)' }}>
                 <div className="flex justify-between items-start">
-                  <Icon size={18} style={{ color: iconColor }} />
-                  <div style={{ fontSize: 'var(--type-caption)', fontWeight: 900, background: `${badgeColor}15`, color: badgeColor, padding: '2px 8px', borderRadius: 'var(--radius-sm)' }}>
+                  <Icon size={16} style={{ color: iconColor }} />
+                  <div style={{ fontSize: '9px', fontWeight: 900, background: `${badgeColor}15`, color: badgeColor, padding: '2px 6px', borderRadius: 'var(--radius-sm)' }}>
                     {badge}
                   </div>
                 </div>
-                <div>
-                  <div style={{ fontSize: 'var(--type-display)', fontWeight: 900, letterSpacing: '-1px', color: 'var(--text-primary)' }}>{value}</div>
-                  <div style={{ fontSize: 'var(--type-caption)', fontWeight: 900, opacity: 0.4, letterSpacing: '0.12em' }}>{label}</div>
+                <div className="flex flex-col gap-0.5">
+                  <div style={{ fontSize: 'var(--type-title2)', fontWeight: 900, color: 'var(--text-primary)', lineHeight: 1 }}>{value}</div>
+                  <div style={{ fontSize: '10px', fontWeight: 900, opacity: 0.4, letterSpacing: '0.1em', textTransform: 'uppercase' }}>{label}</div>
                 </div>
               </GlassCard>
             ))}
@@ -271,7 +284,7 @@ const Dashboard = ({ vehicles, entries, trips, user, isSynced, onAddClick, onMar
                 <div className="flex flex-col gap-3">
                   {Object.entries(tripStats).map(([purpose, stat]) => (
                     <div key={purpose} className="flex justify-between items-center text-primary">
-                      <span style={{ fontSize: 'var(--type-caption)',fontWeight: 900, letterSpacing: '0.08em', opacity: 0.6 }}>{purpose}</span>
+                      <span style={{ fontSize: 'var(--type-caption)', fontWeight: 900, letterSpacing: '0.08em', opacity: 0.6 }}>{purpose}</span>
                       <div style={{ textAlign: 'right' }}>
                         <span className="font-black text-sm">{stat.km.toLocaleString()} KM</span>
                         <span style={{ fontSize: 'var(--type-caption)', marginLeft: 8 }} className="text-secondary">({stat.count} trips)</span>
