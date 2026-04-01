@@ -279,32 +279,6 @@ const App = () => {
   // ---- FUEL ---- (FIX: ID-based CRUD)
   const submitFuel = (e) => {
     e.preventDefault();
-    
-    // Strict Odometer Consistency Check
-    const vehicleEntries = data.entries
-      .filter(entry => entry.vehicleId === fuelForm.vehicleId)
-      .sort((a, b) => new Date(a.date) - new Date(b.date));
-
-    const newDate = new Date(fuelForm.date);
-    const newOdo = Number(fuelForm.odometer);
-
-    for (const entry of vehicleEntries) {
-      if (modal.mode === 'edit' && entry.id === modal.editId) continue;
-      
-      const existingDate = new Date(entry.date);
-      const existingOdo = Number(entry.odometer);
-      if (existingOdo > 0 && newOdo > 0) {
-        if (newDate > existingDate && newOdo < existingOdo) {
-          showToast('Odometer must be ≥ ' + existingOdo + ' (from ' + entry.date + ')', 'error');
-          return;
-        }
-        if (newDate < existingDate && newOdo > existingOdo) {
-          showToast('Odometer must be ≤ ' + existingOdo + ' (from ' + entry.date + ')', 'error');
-          return;
-        }
-      }
-    }
-
     const validation = validateFuelEntry(fuelForm, data.entries, data.vehicles);
     if (!validation.valid) {
       setFormErrors(validation.errors);

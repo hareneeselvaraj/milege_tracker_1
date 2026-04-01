@@ -73,18 +73,17 @@ export const getVehicleStats = (vehicles, entries) => {
     const efficiencyLogs = ve.map((e, i) => calculateEfficiency(e, ve[i - 1])).filter(v => v > 0);
     
     // FIX: Use actual distance between first and last odometer, not just last odometer
-    const firstOdo = ve.length > 0 ? Number(ve[0].odometer) : null;
+    const firstOdo = ve.length > 0 ? Number(ve[0].odometer) : 0;
     const lastOdo = ve.length > 0 ? Number(ve[ve.length - 1].odometer) : null;
-    const distanceDriven = (firstOdo !== null && lastOdo !== null) ? (lastOdo - firstOdo) : 0;
-    const totalKm = distanceDriven; // alias for rest of the func
+    const totalKm = lastOdo !== null ? lastOdo - firstOdo : 0;
     
     // Total fuel used (excluding the last entry since it covers distance beyond our tracking)
     const fuelTillPenultimate = ve.length > 1 
       ? ve.slice(0, -1).reduce((sum, e) => sum + Number(e.liters || 0), 0)
       : 0;
       
-    const avgEff = distanceDriven > 0 && fuelTillPenultimate > 0
-      ? Number((distanceDriven / fuelTillPenultimate).toFixed(1))
+    const avgEff = totalKm > 0 && fuelTillPenultimate > 0
+      ? Number((totalKm / fuelTillPenultimate).toFixed(1))
       : null;
 
     const totalCost = ve.reduce((s, e) => s + Number(e.cost || 0), 0);

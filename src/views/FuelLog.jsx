@@ -3,7 +3,7 @@ import EmptyState from '../components/common/EmptyState';
 import SwipeableCard from '../components/common/SwipeableCard';
 import { Fuel, Download, Trash2, Edit3, Bike, Plus } from 'lucide-react';
 import { exportFuelPDF, exportCSV } from '../lib/exportUtils';
-import { calculateEfficiency, getVehicleStats } from '../lib/analytics';
+import { calculateEfficiency } from '../lib/analytics';
 
 const FuelLog = ({ vehicles, entries, onAddClick, onEdit, onDelete }) => {
   const [activeVehicleId, setActiveVehicleId] = useState('all');
@@ -54,18 +54,18 @@ const FuelLog = ({ vehicles, entries, onAddClick, onEdit, onDelete }) => {
     const totalLiters = entriesWithAnalytics.reduce((sum, e) => sum + Number(e.liters), 0);
     const avgPPL = totalLiters > 0 ? (totalCost / totalLiters).toFixed(1) : '--';
     
-    // Match dashboard logic: compute total distance / total valid fuel
-    const activeVehicles = activeVehicleId === 'all' 
-      ? vehicles 
-      : vehicles.filter(v => v.id === activeVehicleId);
-      
-    const vehicleStats = getVehicleStats(activeVehicles, entries);
-    const totalKm = vehicleStats.reduce((s, vs) => s + vs.totalKm, 0);
-    const totalFuelForMileage = vehicleStats.reduce((s, vs) => s + vs.fuelForMileage, 0);
-    const avgKML = totalFuelForMileage > 0 ? (totalKm / totalFuelForMileage).toFixed(1) : '--';
+    let totalEff = 0;
+    let validCount = 0;
+    entriesWithAnalytics.forEach(e => {
+       if (e.efficiency > 0) {
+         totalEff += e.efficiency;
+         validCount++;
+       }
+    });
+    const avgKML = validCount > 0 ? (totalEff / validCount).toFixed(1) : '--';
     
     return { cost: totalCost.toLocaleString(), liters: totalLiters.toFixed(1), count: entriesWithAnalytics.length, avgPPL, avgKML };
-  }, [entriesWithAnalytics, activeVehicleId, vehicles, entries]);
+  }, [entriesWithAnalytics]);
 
   const filterLabel = activeVehicleId === 'all'
     ? 'All Units'
@@ -80,7 +80,7 @@ const FuelLog = ({ vehicles, entries, onAddClick, onEdit, onDelete }) => {
           <span className="view-subtitle">Secure Logs</span>
         </div>
         <div className="header-actions">
-          <button className="header-icon-btn" onClick={() => exportFuelPDF(entriesWithAnalytics, vehicles, filterLabel)}>
+          <button className="header-icon-btn" onClick={() => exportFuelPDF(filteredEntries, vehicles, filterLabel)}>
             <Download size={20} />
           </button>
           <button className="header-icon-btn primary" onClick={onAddClick}>
@@ -142,30 +142,29 @@ const FuelLog = ({ vehicles, entries, onAddClick, onEdit, onDelete }) => {
                       const vehicle = vehicles.find(v => v.id === entry.vehicleId);
                       const ppl = entry.liters > 0 ? (Number(entry.cost) / Number(entry.liters)).toFixed(1) : null;
                       return (
-                        <div key={entry.id} className="transaction-card stagger-item">
+                        <SwipeableCard 
+                          key={entry.id} 
+                          onEdit={() => onEdit(entry)} 
+                          onDelete={() => onDelete(entry.id)}
+                          className="transaction-card stagger-item"
+                        >
                           <div className={`icon-box ${vehicle?.type === 'bike' ? 'bg-warning-soft text-warning' : 'bg-blue-soft text-blue-soft'}`}>
                             {vehicle?.type === 'bike' ? <Bike size={20} /> : <Fuel size={20} />}
                           </div>
                           <div className="flex-1">
-                            <div className="flex justify-between items-start gap-2">
-                              <h3 className="font-black text-sm tracking-tight text-primary truncate min-w-0 pr-1">{vehicle?.name || 'Unknown'}</h3>
-                              <div className="flex items-center gap-2 shrink-0">
-                                {entry.efficiency > 0 && (
-                                  <span className="text-[10px] font-black tracking-widest text-success bg-success-soft px-2 py-0.5 rounded-full border border-success-border whitespace-nowrap">
-                                    {Number(entry.efficiency).toFixed(1)} KM/L
-                                  </span>
-                                )}
-                                <span className="font-black text-sm text-primary whitespace-nowrap">₹{Number(entry.cost).toLocaleString()}</span>
-                              </div>
+                            <div className="flex justify-between items-start">
+                              <h3 className="font-black text-sm tracking-tight text-primary">{vehicle?.name || 'Unknown'}</h3>
+                              <span className="font-black text-sm text-primary">₹{Number(entry.cost).toLocaleString()}</span>
                             </div>
-                            <div className="flex justify-between items-center mt-1">
-                              <span className="text-xs font-bold text-secondary tracking-widest uppercase mt-1">
+                            <div className="flex justify-between items-center mt-2">
+                              <span className="text-xs font-bold text-secondary tracking-widest uppercase">
                                 {entry.odometer} KM • {entry.liters} L
                               </span>
-                              <div className="flex gap-2">
-                                <button onClick={() => onEdit(entry)} className="action-btn"><Edit3 size={14} className="text-accent" /></button>
-                                <button onClick={() => onDelete(entry.id)} className="action-btn"><Trash2 size={14} className="text-danger" /></button>
-                              </div>
+                              {entry.efficiency > 0 && (
+                                <span className="text-[10px] font-black tracking-widest text-success bg-success-soft px-2 py-0.5 rounded-full border border-success-border">
+                                  {entry.efficiency} KM/L
+                                </span>
+                              )}
                             </div>
                             {entry.photo && (
                               <div style={{ marginTop: 6 }}>
@@ -173,7 +172,7 @@ const FuelLog = ({ vehicles, entries, onAddClick, onEdit, onDelete }) => {
                               </div>
                             )}
                           </div>
-                        </div>
+                        </SwipeableCard>
                       );
                     })}
                   </div>
